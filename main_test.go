@@ -17,9 +17,8 @@ func TestValidateAwsCredentialsValid(test *testing.T) {
 	os.Setenv("AWS_SECRET_ACCESS_KEY", "AWS_SECRET_ACCESS_KEY_VALUE")
 	os.Setenv("AWS_REGION", "AWS_REGION_VALUE")
 
-	valid, err := ValidateAwsCredentials()
+	err := ValidateAwsCredentials()
 
-	assert.Equal(test, valid, true)
 	assert.Equal(test, err, nil)
 
 	os.Unsetenv("AWS_ACCESS_KEY_ID")
@@ -28,8 +27,7 @@ func TestValidateAwsCredentialsValid(test *testing.T) {
 }
 
 func TestValidateAwsCredentialsAreMissing(test *testing.T) {
-	valid, err := ValidateAwsCredentials()
+	err := ValidateAwsCredentials()
 
-	assert.Equal(test, valid, false)
 	assert.EqualError(test, err, "AWS credentials not set")
 }
