@@ -189,35 +189,22 @@ func getAuotscalingGroupInstanceIDs(resp *autoscaling.DescribeAutoScalingGroupsO
 }
 
 func validateAwsCredentials() error {
-	log.WithFields(log.Fields{
-		"AWS_ACCES_KEY_ID":      os.Getenv("AWS_ACCESS_KEY_ID"),
-		"AWS_SECRET_ACCESS_KEY": os.Getenv("AWS_SECRET_ACCESS_KEY"),
-		"AWS_REGION":            os.Getenv("AWS_REGION"),
-		"ASG_NAME":              os.Getenv("ASG_NAME"),
-	}).Debug("AWS environment variables")
-
-	valAccessKey, okAccessKey := os.LookupEnv("AWS_ACCESS_KEY_ID")
-	valSecretKey, okSecretKey := os.LookupEnv("AWS_SECRET_ACCESS_KEY")
-	valRegion, okRegion := os.LookupEnv("AWS_REGION")
-	valAsgName, okAsgName := os.LookupEnv("ASG_NAME")
-
-	log.WithFields(log.Fields{
-		"valAccessKey": valAccessKey,
-		"okAccessKey":  okAccessKey,
-		"valSecretKey": valSecretKey,
-		"okSecretKey":  okSecretKey,
-		"valRegion":    valRegion,
-		"okRegion":     okRegion,
-		"valAsgName":   valAsgName,
-		"okAsgName":    okAsgName,
-	}).Debug("values")
-
-	if !okAccessKey || valAccessKey == "" ||
-		!okSecretKey || valSecretKey == "" ||
-		!okRegion || valRegion == "" ||
-		!okAsgName || valAsgName == "" {
-		return errors.New("AWS credentials not set")
+	if isEnvVarSetWithValue("AWS_ACCESS_KEY_ID") &&
+		isEnvVarSetWithValue("AWS_SECRET_ACCESS_KEY") &&
+		isEnvVarSetWithValue("AWS_REGION") &&
+		isEnvVarSetWithValue("ASG_NAME") {
+		return nil
 	}
 
-	return nil
+	return errors.New("AWS credentials not set")
+}
+
+func isEnvVarSetWithValue(key string) bool {
+	val, ok := os.LookupEnv(key)
+	log.WithFields(log.Fields{
+		"key": key,
+		"val": val,
+		"ok":  ok,
+	}).Debug("isEnvVarSetWithValue")
+	return ok && val != ""
 }
