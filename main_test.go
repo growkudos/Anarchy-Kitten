@@ -1,10 +1,12 @@
 package main
 
 import (
-	"fmt"
+	"errors"
 	"os"
 	"testing"
+	"time"
 
+	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/autoscaling"
 	"github.com/stretchr/testify/assert"
 )
@@ -26,17 +28,116 @@ func TestGetAuotscalingGroupInstanceIDs(test *testing.T) {
 
 	resp := getMockDescribeAutoScalingGroupsOutput(mockASGInstanceIds)
 
-	instanceIDs := getAuotscalingGroupInstanceIDs(resp)
+	instanceIDs := getAuotscalingGroupInstanceIDs(&resp)
 
 	for index, instanceID := range instanceIDs {
-		assert.Equal(test, instanceID, mockASGInstanceIds[index], nil)
+		assert.Equal(test, *instanceID, mockASGInstanceIds[index], nil)
 	}
+}
+
+func TestGetEnterStandbyInput(test *testing.T) {
+	mockASGInstanceIds := []*string{
+		aws.String("instanceIdOne"),
+		aws.String("instanceIdTwo"),
+		aws.String("instanceIdThree"),
+		aws.String("instanceIdFour"),
+		aws.String("instanceIdFive"),
+	}
+
+	resourceName := "ResourceName"
+
+	enterStandbyInput := getEnterStandbyInput(mockASGInstanceIds, &resourceName)
+
+	assert.Equal(test, *enterStandbyInput.AutoScalingGroupName, "ResourceName", nil)
+	assert.Equal(test, *enterStandbyInput.ShouldDecrementDesiredCapacity, true, nil)
+
+	for index := range mockASGInstanceIds {
+		assert.Equal(test, *enterStandbyInput.InstanceIds[index], *mockASGInstanceIds[index], nil)
+	}
+}
+
+func TestGetDescribeScalingActivitiesInput(test *testing.T) {
+	mockActivityIds := []*string{
+		aws.String("ActivityIdOne"),
+		aws.String("ActivityIdTwo"),
+		aws.String("ActivityIdThree"),
+		aws.String("ActivityIdFour"),
+		aws.String("ActivityIdFive"),
+	}
+
+	resourceName := "ResourceName"
+
+	describeScalingActivitiesInput := getDescribeScalingActivitiesInput(mockActivityIds, &resourceName)
+
+	assert.Equal(test, *describeScalingActivitiesInput.AutoScalingGroupName, "ResourceName", nil)
+
+	for index := range mockActivityIds {
+		assert.Equal(test, *describeScalingActivitiesInput.ActivityIds[index], *mockActivityIds[index], nil)
+	}
+}
+
+func TestHandleASGActivityPolling(test *testing.T) {
+	pollIteration := 0
+	mockConfig := &autoscaling.DescribeScalingActivitiesInput{}
+	pollFunc := func(*autoscaling.DescribeScalingActivitiesInput) (bool, error) {
+		assert.Equal(test, pollIteration < 5, true)
+
+		pollIteration += 1
+
+		return (pollIteration == 4), nil
+	}
+
+	success := handleASGActivityPolling(mockConfig, pollFunc, 5, 1, time.Millisecond)
+
+	assert.Equal(test, success, true)
+}
+
+func TestHandleASGActivityPollingWhenTimesOut(test *testing.T) {
+	mockConfig := &autoscaling.DescribeScalingActivitiesInput{}
+	pollFunc := func(*autoscaling.DescribeScalingActivitiesInput) (bool, error) {
+		return false, nil
+	}
+
+	success := handleASGActivityPolling(mockConfig, pollFunc, 5, 1, time.Millisecond)
+
+	assert.Equal(test, success, false)
+}
+
+func TestHandleASGActivityPollingErrorHandling(test *testing.T) {
+	pollIteration := 0
+	mockConfig := &autoscaling.DescribeScalingActivitiesInput{}
+	pollFunc := func(*autoscaling.DescribeScalingActivitiesInput) (bool, error) {
+		pollIteration += 1
+
+		return false, errors.New("Test Error")
+	}
+
+	success := handleASGActivityPolling(mockConfig, pollFunc, 5, 1, time.Millisecond)
+
+	assert.Equal(test, success, false)
+	assert.Equal(test, pollIteration, 1)
+}
+
+func TestPollASGActivitiesForSuccess(test *testing.T) {
+	pollIteration := 0
+	mockConfig := &autoscaling.DescribeScalingActivitiesInput{}
+	pollFunc := func(*autoscaling.DescribeScalingActivitiesInput) (bool, error) {
+		pollIteration += 1
+
+		return false, errors.New("Test Error")
+	}
+
+	success := handleASGActivityPolling(mockConfig, pollFunc, 5, 1, time.Millisecond)
+
+	assert.Equal(test, success, false)
+	assert.Equal(test, pollIteration, 1)
 }
 
 func TestValidateAwsCredentialsValid(test *testing.T) {
 	os.Setenv("AWS_ACCESS_KEY_ID", "AWS_ACCESS_KEY_ID_VALUE")
 	os.Setenv("AWS_SECRET_ACCESS_KEY", "AWS_SECRET_ACCESS_KEY_VALUE")
 	os.Setenv("AWS_REGION", "AWS_REGION_VALUE")
+	os.Setenv("ASG_NAME", "ASG_NAME_VALUE")
 
 	err := ValidateAwsCredentials()
 
@@ -45,6 +146,7 @@ func TestValidateAwsCredentialsValid(test *testing.T) {
 	os.Unsetenv("AWS_ACCESS_KEY_ID")
 	os.Unsetenv("AWS_SECRET_ACCESS_KEY")
 	os.Unsetenv("AWS_REGION")
+	os.Unsetenv("ASG_NAME")
 }
 
 func TestValidateAwsCredentialsAreMissing(test *testing.T) {
