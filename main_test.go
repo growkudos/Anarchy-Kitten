@@ -8,6 +8,7 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/aws/session"
+	"github.com/aws/aws-sdk-go/awstesting/unit"
 	"github.com/aws/aws-sdk-go/service/autoscaling"
 	"github.com/stretchr/testify/assert"
 )
@@ -123,19 +124,22 @@ func TestHandleASGActivityPollingErrorHandling(test *testing.T) {
 }
 
 func TestPollASGActivitiesForSuccess(test *testing.T) {
-	pollIteration := 0
-	mockConfig := &autoscaling.DescribeScalingActivitiesInput{}
-	mockSess := &session.Session{}
-	pollFunc := func(*autoscaling.DescribeScalingActivitiesInput, *session.Session) (bool, error) {
-		pollIteration += 1
-
-		return false, errors.New("Test Error")
+	mockConfig := &autoscaling.DescribeScalingActivitiesInput{
+		ActivityIds: []*string{
+			aws.String("ActivityIdOne"),
+			aws.String("ActivityIdTwo"),
+			aws.String("ActivityIdThree"),
+		},
+		AutoScalingGroupName: aws.String("ResourceName"),
+		MaxRecords:           aws.Int64(1),
 	}
 
-	success := handleASGActivityPolling(mockConfig, pollFunc, mockSess, 5, 1, time.Millisecond)
+	mockSess := unit.Session
 
-	assert.Equal(test, success, false)
-	assert.Equal(test, pollIteration, 1)
+	success, err := pollASGActivitiesForSuccess(mockConfig, mockSess)
+
+	assert.Equal(test, success, true)
+	assert.Equal(test, err, nil)
 }
 
 func TestValidateAwsCredentialsValid(test *testing.T) {
