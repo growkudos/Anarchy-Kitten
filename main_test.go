@@ -6,6 +6,8 @@ import (
 	"testing"
 	"time"
 
+	log "github.com/sirupsen/logrus"
+
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/aws/session"
 	"github.com/aws/aws-sdk-go/awstesting/unit"
@@ -156,6 +158,19 @@ func TestValidateAwsCredentialsValid(test *testing.T) {
 	os.Unsetenv("AWS_SECRET_ACCESS_KEY")
 	os.Unsetenv("AWS_REGION")
 	os.Unsetenv("ASG_NAME")
+}
+
+func TestValidateAwsCredentialsSomeAreMissing(test *testing.T) {
+	log.SetLevel(log.DebugLevel)
+	os.Setenv("AWS_ACCESS_KEY_ID", "AWS_ACCESS_KEY_ID_VALUE")
+	os.Setenv("AWS_SECRET_ACCESS_KEY", "AWS_SECRET_ACCESS_KEY_VALUE")
+
+	err := validateAwsCredentials()
+
+	assert.EqualError(test, err, "AWS credentials not set")
+
+	os.Unsetenv("AWS_ACCESS_KEY_ID")
+	os.Unsetenv("AWS_SECRET_ACCESS_KEY")
 }
 
 func TestValidateAwsCredentialsAreMissing(test *testing.T) {

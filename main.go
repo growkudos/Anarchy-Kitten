@@ -17,6 +17,9 @@ import (
 type pollASGActivities func(*autoscaling.DescribeScalingActivitiesInput, *session.Session) (bool, error)
 
 func main() {
+	log.SetLevel(log.DebugLevel)
+	log.SetOutput(os.Stdout)
+
 	log.Info("Checking Credentials...")
 
 	if validateAwsCredentials() != nil {
@@ -186,14 +189,35 @@ func getAuotscalingGroupInstanceIDs(resp *autoscaling.DescribeAutoScalingGroupsO
 }
 
 func validateAwsCredentials() error {
-	AwsAccessKeyID := os.Getenv("AWS_ACCESS_KEY_ID") != ""
-	AwsSecretAccessKey := os.Getenv("AWS_SECRET_ACCESS_KEY") != ""
-	AwsRegion := os.Getenv("AWS_REGION") != ""
-	AsgName := os.Getenv("ASG_NAME") != ""
+	log.WithFields(log.Fields{
+		"AWS_ACCES_KEY_ID":      os.Getenv("AWS_ACCESS_KEY_ID"),
+		"AWS_SECRET_ACCESS_KEY": os.Getenv("AWS_SECRET_ACCESS_KEY"),
+		"AWS_REGION":            os.Getenv("AWS_REGION"),
+		"ASG_NAME":              os.Getenv("ASG_NAME"),
+	}).Debug("AWS environment variables")
 
-	if AwsAccessKeyID && AwsSecretAccessKey && AwsRegion && AsgName {
-		return nil
+	valAccessKey, okAccessKey := os.LookupEnv("AWS_ACCESS_KEY_ID")
+	valSecretKey, okSecretKey := os.LookupEnv("AWS_SECRET_ACCESS_KEY")
+	valRegion, okRegion := os.LookupEnv("AWS_REGION")
+	valAsgName, okAsgName := os.LookupEnv("ASG_NAME")
+
+	log.WithFields(log.Fields{
+		"valAccessKey": valAccessKey,
+		"okAccessKey":  okAccessKey,
+		"valSecretKey": valSecretKey,
+		"okSecretKey":  okSecretKey,
+		"valRegion":    valRegion,
+		"okRegion":     okRegion,
+		"valAsgName":   valAsgName,
+		"okAsgName":    okAsgName,
+	}).Debug("values")
+
+	if !okAccessKey || valAccessKey == "" ||
+		!okSecretKey || valSecretKey == "" ||
+		!okRegion || valRegion == "" ||
+		!okAsgName || valAsgName == "" {
+		return errors.New("AWS credentials not set")
 	}
 
-	return errors.New("AWS credentials not set")
+	return nil
 }
