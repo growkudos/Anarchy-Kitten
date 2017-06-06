@@ -14,7 +14,7 @@ import (
 )
 
 func TestAwsCredentials(test *testing.T) {
-	credentials := AwsCredentials()
+	credentials := awsCredentials()
 
 	assert.Equal(test, credentials, "test", "This should fail")
 }
@@ -148,7 +148,7 @@ func TestValidateAwsCredentialsValid(test *testing.T) {
 	os.Setenv("AWS_REGION", "AWS_REGION_VALUE")
 	os.Setenv("ASG_NAME", "ASG_NAME_VALUE")
 
-	err := ValidateAwsCredentials()
+	err := validateAwsCredentials()
 
 	assert.Equal(test, err, nil)
 
@@ -159,7 +159,7 @@ func TestValidateAwsCredentialsValid(test *testing.T) {
 }
 
 func TestValidateAwsCredentialsAreMissing(test *testing.T) {
-	err := ValidateAwsCredentials()
+	err := validateAwsCredentials()
 
 	assert.EqualError(test, err, "AWS credentials not set")
 }

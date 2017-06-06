@@ -3,22 +3,24 @@ package main
 import (
 	"errors"
 	"fmt"
+	"os"
 	"time"
+
+	log "github.com/sirupsen/logrus"
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/aws/session"
 	"github.com/aws/aws-sdk-go/service/autoscaling"
 	// "github.com/aws/aws-sdk-go/service/ec2"
-	"os"
 )
 
-type PollASGActivities func(*autoscaling.DescribeScalingActivitiesInput, *session.Session) (bool, error)
+type pollASGActivities func(*autoscaling.DescribeScalingActivitiesInput, *session.Session) (bool, error)
 
 func main() {
-	fmt.Println("Checking Credentials...")
+	log.Info("Checking Credentials...")
 
-	if ValidateAwsCredentials() != nil {
-		fmt.Println("Credentials are invalid!")
+	if validateAwsCredentials() != nil {
+		log.Error("Credentials are invalid!")
 		return
 	}
 
@@ -28,7 +30,7 @@ func main() {
 
 	// getAuotscalingGroupInstanceIDs (resp *autoscaling.DescribeAutoScalingGroupsInput)
 
-	instanceIdQueryParams := &autoscaling.DescribeAutoScalingGroupsInput{
+	instanceIDQueryParams := &autoscaling.DescribeAutoScalingGroupsInput{
 		AutoScalingGroupNames: []*string{
 			aws.String("review-www"), // Required
 			// More values...
@@ -37,28 +39,32 @@ func main() {
 		// NextToken:  aws.String("XmlString"),
 	}
 
-	resp, err := svc.DescribeAutoScalingGroups(instanceIdQueryParams)
+	resp, err := svc.DescribeAutoScalingGroups(instanceIDQueryParams)
 
 	if err != nil {
-		// TODO investigate https://golang.org/pkg/log/#Fatalf
-		fmt.Println("ERROR!")
-		fmt.Println(err.Error())
+		log.WithError(err).Error("ERROR!")
 		return
 	}
 
 	instanceIDs := getAuotscalingGroupInstanceIDs(resp)
 
-	fmt.Println("%v", *instanceIDs[0])
+	log.WithFields(log.Fields{
+		"instanceIDs": *instanceIDs[0],
+	}).Debug("Instances in auto scaling group")
 
 	resourceName := os.Getenv("ASG_NAME")
 
 	enterStandByQueryParams := getEnterStandbyInput(instanceIDs, &resourceName)
 
-	fmt.Printf("%v", enterStandByQueryParams)
+	log.WithFields(log.Fields{
+		"enterStandByQueryParams": enterStandByQueryParams,
+	}).Debug("Query parameters for stand by")
 
 	enterStandByQueryResp, err := svc.EnterStandby(enterStandByQueryParams)
 
-	fmt.Println("%v", enterStandByQueryResp)
+	log.WithFields(log.Fields{
+		"enterStandByQueryResp": enterStandByQueryResp,
+	}).Debug("Query response for stand by")
 
 	activityIDs := []*string{
 		enterStandByQueryResp.Activities[0].ActivityId,
@@ -74,28 +80,27 @@ func main() {
 		describeScalingActivitiesResp, err := svc.DescribeScalingActivities(describeScalingActivitiesQueryParams)
 
 		if err != nil {
-			// TODO investigate https://golang.org/pkg/log/#Fatalf
-			fmt.Println("ERROR!")
-			fmt.Println(err.Error())
-			break
+			log.WithError(err).Error("ERROR!")
 			return
 		}
 
-		fmt.Println("%v", describeScalingActivitiesResp)
+		log.WithFields(log.Fields{
+			"describeScalingActivitiesResp": describeScalingActivitiesResp,
+		}).Debug("describe scaling activities response")
 
 		time.Sleep(time.Second * 5)
 	}
 
-	fmt.Println("Everything is gravy!")
+	log.Info("Success")
 }
 
-func AwsCredentials() string {
+func awsCredentials() string {
 	return "test"
 }
 
 func handleASGActivityPolling(
 	describeActivityConfig *autoscaling.DescribeScalingActivitiesInput,
-	pollFunc PollASGActivities,
+	pollFunc pollASGActivities,
 	sess *session.Session,
 	timeoutInDuration int,
 	pollEvery int,
@@ -123,7 +128,7 @@ func handleASGActivityPolling(
 
 		time.Sleep(duration * time.Duration(pollEvery))
 
-		pollIteration += 1
+		pollIteration++
 	}
 
 	return false
@@ -180,13 +185,13 @@ func getAuotscalingGroupInstanceIDs(resp *autoscaling.DescribeAutoScalingGroupsO
 	return instanceIDs
 }
 
-func ValidateAwsCredentials() error {
-	AwsAccessKeyId := os.Getenv("AWS_ACCESS_KEY_ID") != ""
+func validateAwsCredentials() error {
+	AwsAccessKeyID := os.Getenv("AWS_ACCESS_KEY_ID") != ""
 	AwsSecretAccessKey := os.Getenv("AWS_SECRET_ACCESS_KEY") != ""
 	AwsRegion := os.Getenv("AWS_REGION") != ""
 	AsgName := os.Getenv("ASG_NAME") != ""
 
-	if AwsAccessKeyId && AwsSecretAccessKey && AwsRegion && AsgName {
+	if AwsAccessKeyID && AwsSecretAccessKey && AwsRegion && AsgName {
 		return nil
 	}
 
