@@ -6,22 +6,42 @@ import (
 	"testing"
 	"time"
 
-	log "github.com/sirupsen/logrus"
-
 	"github.com/aws/aws-sdk-go/aws"
-	"github.com/aws/aws-sdk-go/aws/session"
 	"github.com/aws/aws-sdk-go/awstesting/unit"
 	"github.com/aws/aws-sdk-go/service/autoscaling"
+	"github.com/aws/aws-sdk-go/service/autoscaling/autoscalingiface"
 	"github.com/stretchr/testify/assert"
 )
 
-func TestAwsCredentials(test *testing.T) {
-	credentials := awsCredentials()
+// TODO set debug level to panic
 
-	assert.Equal(test, credentials, "test", "This should fail")
+type mockAutoScalingClient struct {
+	autoscalingiface.AutoScalingAPI
+	Error   bool
+	Success bool
 }
 
-func TestGetAuotscalingGroupInstanceIDs(test *testing.T) {
+func (m *mockAutoScalingClient) DescribeScalingActivities(
+	*autoscaling.DescribeScalingActivitiesInput) (
+	*autoscaling.DescribeScalingActivitiesOutput, error) {
+	statusCode := "Fail"
+	if m.Success {
+		statusCode = "Successful"
+	}
+
+	activity := autoscaling.Activity{StatusCode: aws.String(statusCode)}
+	activities := []*autoscaling.Activity{&activity}
+	resp := &autoscaling.DescribeScalingActivitiesOutput{Activities: activities}
+
+	var err error
+	if m.Error == true {
+		err = errors.New("Error")
+	}
+
+	return resp, err
+}
+
+func TestGetAuotscalingGroupInstanceIDs(t *testing.T) {
 	mockASGInstanceIds := []string{
 		"instanceIdOne",
 		"instanceIdTwo",
@@ -35,11 +55,11 @@ func TestGetAuotscalingGroupInstanceIDs(test *testing.T) {
 	instanceIDs := getAuotscalingGroupInstanceIDs(&resp)
 
 	for index, instanceID := range instanceIDs {
-		assert.Equal(test, *instanceID, mockASGInstanceIds[index], nil)
+		assert.Equal(t, *instanceID, mockASGInstanceIds[index], nil)
 	}
 }
 
-func TestGetEnterStandbyInput(test *testing.T) {
+func TestGetEnterStandbyInput(t *testing.T) {
 	mockASGInstanceIds := []*string{
 		aws.String("instanceIdOne"),
 		aws.String("instanceIdTwo"),
@@ -52,15 +72,19 @@ func TestGetEnterStandbyInput(test *testing.T) {
 
 	enterStandbyInput := getEnterStandbyInput(mockASGInstanceIds, &resourceName)
 
-	assert.Equal(test, *enterStandbyInput.AutoScalingGroupName, "ResourceName", nil)
-	assert.Equal(test, *enterStandbyInput.ShouldDecrementDesiredCapacity, true, nil)
+	assert.Equal(t, *enterStandbyInput.AutoScalingGroupName, "ResourceName", nil)
+	assert.Equal(t, *enterStandbyInput.ShouldDecrementDesiredCapacity, true, nil)
 
 	for index := range mockASGInstanceIds {
-		assert.Equal(test, *enterStandbyInput.InstanceIds[index], *mockASGInstanceIds[index], nil)
+		assert.Equal(
+			t,
+			*enterStandbyInput.InstanceIds[index],
+			*mockASGInstanceIds[index],
+			nil)
 	}
 }
 
-func TestGetDescribeScalingActivitiesInput(test *testing.T) {
+func TestGetDescribeScalingActivitiesInput(t *testing.T) {
 	mockActivityIds := []*string{
 		aws.String("ActivityIdOne"),
 		aws.String("ActivityIdTwo"),
@@ -71,112 +95,137 @@ func TestGetDescribeScalingActivitiesInput(test *testing.T) {
 
 	resourceName := "ResourceName"
 
-	describeScalingActivitiesInput := getDescribeScalingActivitiesInput(mockActivityIds, &resourceName)
+	describeScalingActivitiesInput := getDescribeScalingActivitiesInput(
+		mockActivityIds,
+		&resourceName)
 
-	assert.Equal(test, *describeScalingActivitiesInput.AutoScalingGroupName, "ResourceName", nil)
+	assert.Equal(
+		t,
+		*describeScalingActivitiesInput.AutoScalingGroupName,
+		"ResourceName",
+		nil)
 
 	for index := range mockActivityIds {
-		assert.Equal(test, *describeScalingActivitiesInput.ActivityIds[index], *mockActivityIds[index], nil)
+		assert.Equal(
+			t,
+			*describeScalingActivitiesInput.ActivityIds[index],
+			*mockActivityIds[index],
+			nil)
 	}
 }
 
-func TestHandleASGActivityPolling(test *testing.T) {
+func TestHandleASGActivityPolling(t *testing.T) {
 	pollIteration := 0
 	mockConfig := &autoscaling.DescribeScalingActivitiesInput{}
-	mockSess := &session.Session{}
-	pollFunc := func(*autoscaling.DescribeScalingActivitiesInput, *session.Session) (bool, error) {
-		assert.Equal(test, pollIteration < 5, true)
-
-		pollIteration += 1
-
-		return (pollIteration == 4), nil
-	}
+	mockSess := unit.Session
+	pollFunc :=
+		func(
+			*autoscaling.DescribeScalingActivitiesInput,
+			autoscalingiface.AutoScalingAPI) (bool, error) {
+			assert.Equal(t, pollIteration < 5, true)
+			pollIteration++
+			return (pollIteration == 4), nil
+		}
 
 	success := handleASGActivityPolling(mockConfig, pollFunc, mockSess, 5, 1, time.Millisecond)
 
-	assert.Equal(test, success, true)
+	assert.Equal(t, success, true)
 }
 
-func TestHandleASGActivityPollingWhenTimesOut(test *testing.T) {
+func TestHandleASGActivityPollingWhenTimesOut(t *testing.T) {
 	mockConfig := &autoscaling.DescribeScalingActivitiesInput{}
-	mockSess := &session.Session{}
-	pollFunc := func(*autoscaling.DescribeScalingActivitiesInput, *session.Session) (bool, error) {
+	mockSess := unit.Session
+	pollFunc := func(
+		*autoscaling.DescribeScalingActivitiesInput,
+		autoscalingiface.AutoScalingAPI) (bool, error) {
 		return false, nil
 	}
 
 	success := handleASGActivityPolling(mockConfig, pollFunc, mockSess, 5, 1, time.Millisecond)
 
-	assert.Equal(test, success, false)
+	assert.Equal(t, success, false)
 }
 
-func TestHandleASGActivityPollingErrorHandling(test *testing.T) {
+func TestHandleASGActivityPollingErrorHandling(t *testing.T) {
 	pollIteration := 0
 	mockConfig := &autoscaling.DescribeScalingActivitiesInput{}
-	mockSess := &session.Session{}
-	pollFunc := func(*autoscaling.DescribeScalingActivitiesInput, *session.Session) (bool, error) {
-		pollIteration += 1
+	mockSess := unit.Session
+	pollFunc := func(
+		*autoscaling.DescribeScalingActivitiesInput,
+		autoscalingiface.AutoScalingAPI) (bool, error) {
+		pollIteration++
 
 		return false, errors.New("Test Error")
 	}
 
 	success := handleASGActivityPolling(mockConfig, pollFunc, mockSess, 5, 1, time.Millisecond)
 
-	assert.Equal(test, success, false)
-	assert.Equal(test, pollIteration, 1)
+	assert.Equal(t, success, false)
+	assert.Equal(t, pollIteration, 1)
 }
 
-func TestPollASGActivitiesForSuccess(test *testing.T) {
-	mockConfig := &autoscaling.DescribeScalingActivitiesInput{
-		ActivityIds: []*string{
-			aws.String("ActivityIdOne"),
-			aws.String("ActivityIdTwo"),
-			aws.String("ActivityIdThree"),
-		},
-		AutoScalingGroupName: aws.String("ResourceName"),
-		MaxRecords:           aws.Int64(1),
-	}
+func TestPollASGActivitiesForSuccessError(t *testing.T) {
+	mockConfig := &autoscaling.DescribeScalingActivitiesInput{}
+	mockSvc := &mockAutoScalingClient{Error: true}
+	success, err := checkActivitiesForSuccess(mockConfig, mockSvc)
 
-	mockSess := unit.Session
-
-	success, err := pollASGActivitiesForSuccess(mockConfig, mockSess)
-
-	assert.Equal(test, success, true)
-	assert.Equal(test, err, nil)
+	assert.Equal(t, success, false)
+	assert.EqualError(t, err, "Error")
 }
 
-func TestValidateAwsCredentialsValid(test *testing.T) {
-	os.Setenv("AWS_ACCESS_KEY_ID", "AWS_ACCESS_KEY_ID_VALUE")
-	os.Setenv("AWS_SECRET_ACCESS_KEY", "AWS_SECRET_ACCESS_KEY_VALUE")
-	os.Setenv("AWS_REGION", "AWS_REGION_VALUE")
-	os.Setenv("ASG_NAME", "ASG_NAME_VALUE")
+func TestPollASGActivitiesForSuccessNotFinished(t *testing.T) {
+	mockConfig := &autoscaling.DescribeScalingActivitiesInput{}
+	mockSvc := &mockAutoScalingClient{}
+	success, err := checkActivitiesForSuccess(mockConfig, mockSvc)
 
+	assert.Equal(t, false, success)
+	assert.Equal(t, nil, err)
+}
+
+func TestPollASGActivitiesForSuccess(t *testing.T) {
+	mockConfig := &autoscaling.DescribeScalingActivitiesInput{}
+
+	mockSvc := &mockAutoScalingClient{Success: true}
+	success, err := checkActivitiesForSuccess(mockConfig, mockSvc)
+
+	assert.Equal(t, success, true)
+	assert.Equal(t, err, nil)
+}
+
+func TestValidateAwsCredentialsValid(t *testing.T) {
+	err := os.Setenv("AWS_ACCESS_KEY_ID", "AWS_ACCESS_KEY_ID_VALUE")
+	err = os.Setenv("AWS_SECRET_ACCESS_KEY", "AWS_SECRET_ACCESS_KEY_VALUE")
+	err = os.Setenv("AWS_REGION", "AWS_REGION_VALUE")
+	err = os.Setenv("ASG_NAME", "ASG_NAME_VALUE")
+	assert.Nil(t, err)
+
+	err = validateAwsCredentials()
+	assert.Nil(t, err)
+
+	err = os.Unsetenv("AWS_ACCESS_KEY_ID")
+	err = os.Unsetenv("AWS_SECRET_ACCESS_KEY")
+	err = os.Unsetenv("AWS_REGION")
+	err = os.Unsetenv("ASG_NAME")
+	assert.Nil(t, err)
+}
+
+func TestValidateAwsCredentialsSomeAreMissing(t *testing.T) {
+	err := os.Setenv("AWS_ACCESS_KEY_ID", "AWS_ACCESS_KEY_ID_VALUE")
+	err = os.Setenv("AWS_SECRET_ACCESS_KEY", "AWS_SECRET_ACCESS_KEY_VALUE")
+	assert.Nil(t, err)
+
+	err = validateAwsCredentials()
+	assert.EqualError(t, err, "AWS credentials not set")
+
+	err = os.Unsetenv("AWS_ACCESS_KEY_ID")
+	err = os.Unsetenv("AWS_SECRET_ACCESS_KEY")
+	assert.Nil(t, err)
+}
+
+func TestValidateAwsCredentialsAreMissing(t *testing.T) {
 	err := validateAwsCredentials()
 
-	assert.Equal(test, err, nil)
-
-	os.Unsetenv("AWS_ACCESS_KEY_ID")
-	os.Unsetenv("AWS_SECRET_ACCESS_KEY")
-	os.Unsetenv("AWS_REGION")
-	os.Unsetenv("ASG_NAME")
-}
-
-func TestValidateAwsCredentialsSomeAreMissing(test *testing.T) {
-	log.SetLevel(log.DebugLevel)
-	os.Setenv("AWS_ACCESS_KEY_ID", "AWS_ACCESS_KEY_ID_VALUE")
-	os.Setenv("AWS_SECRET_ACCESS_KEY", "AWS_SECRET_ACCESS_KEY_VALUE")
-
-	err := validateAwsCredentials()
-
-	assert.EqualError(test, err, "AWS credentials not set")
-
-	os.Unsetenv("AWS_ACCESS_KEY_ID")
-	os.Unsetenv("AWS_SECRET_ACCESS_KEY")
-}
-
-func TestValidateAwsCredentialsAreMissing(test *testing.T) {
-	err := validateAwsCredentials()
-
-	assert.EqualError(test, err, "AWS credentials not set")
+	assert.EqualError(t, err, "AWS credentials not set")
 }
 
 func getInstanceList(instanceIDs []string) []*autoscaling.Instance {

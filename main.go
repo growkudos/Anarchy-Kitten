@@ -2,7 +2,6 @@ package main
 
 import (
 	"errors"
-	"fmt"
 	"os"
 	"time"
 
@@ -11,10 +10,13 @@ import (
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/aws/session"
 	"github.com/aws/aws-sdk-go/service/autoscaling"
+	"github.com/aws/aws-sdk-go/service/autoscaling/autoscalingiface"
 	// "github.com/aws/aws-sdk-go/service/ec2"
 )
 
-type pollASGActivities func(*autoscaling.DescribeScalingActivitiesInput, *session.Session) (bool, error)
+type pollASGActivities func(
+	*autoscaling.DescribeScalingActivitiesInput,
+	autoscalingiface.AutoScalingAPI) (bool, error)
 
 func main() {
 	log.SetLevel(log.DebugLevel)
@@ -27,25 +29,21 @@ func main() {
 		return
 	}
 
+	asgName := os.Getenv("ASG_NAME")
+
 	sess := session.Must(session.NewSession())
-
 	svc := autoscaling.New(sess)
-
-	// getAuotscalingGroupInstanceIDs (resp *autoscaling.DescribeAutoScalingGroupsInput)
 
 	instanceIDQueryParams := &autoscaling.DescribeAutoScalingGroupsInput{
 		AutoScalingGroupNames: []*string{
-			aws.String("review-www"), // Required
-			// More values...
+			aws.String(asgName),
 		},
 		MaxRecords: aws.Int64(1),
-		// NextToken:  aws.String("XmlString"),
 	}
 
 	resp, err := svc.DescribeAutoScalingGroups(instanceIDQueryParams)
-
 	if err != nil {
-		log.WithError(err).Error("ERROR!")
+		log.WithError(err).Error("DescribeAutoScalingGroups failed")
 		return
 	}
 
@@ -55,9 +53,7 @@ func main() {
 		"instanceIDs": *instanceIDs[0],
 	}).Debug("Instances in auto scaling group")
 
-	resourceName := os.Getenv("ASG_NAME")
-
-	enterStandByQueryParams := getEnterStandbyInput(instanceIDs, &resourceName)
+	enterStandByQueryParams := getEnterStandbyInput(instanceIDs, &asgName)
 
 	log.WithFields(log.Fields{
 		"enterStandByQueryParams": enterStandByQueryParams,
@@ -75,30 +71,24 @@ func main() {
 
 	describeScalingActivitiesQueryParams := &autoscaling.DescribeScalingActivitiesInput{
 		ActivityIds:          activityIDs,
-		AutoScalingGroupName: &resourceName,
+		AutoScalingGroupName: &asgName,
 		MaxRecords:           aws.Int64(1),
 	}
 
-	for i := 0; i <= 5; i++ {
-		describeScalingActivitiesResp, err := svc.DescribeScalingActivities(describeScalingActivitiesQueryParams)
+	log.WithFields(log.Fields{
+		"describeScalingActivitiesQueryParams": describeScalingActivitiesQueryParams,
+	}).Debug("ASG describe input")
 
-		if err != nil {
-			log.WithError(err).Error("ERROR!")
-			return
-		}
-
-		log.WithFields(log.Fields{
-			"describeScalingActivitiesResp": describeScalingActivitiesResp,
-		}).Debug("describe scaling activities response")
-
-		time.Sleep(time.Second * 5)
-	}
+	// TODO poll
+	handleASGActivityPolling(
+		describeScalingActivitiesQueryParams,
+		checkActivitiesForSuccess,
+		session.New(),
+		42, // TODO
+		1,  // TODO
+		time.Second)
 
 	log.Info("Success")
-}
-
-func awsCredentials() string {
-	return "test"
 }
 
 func handleASGActivityPolling(
@@ -111,17 +101,16 @@ func handleASGActivityPolling(
 ) bool {
 
 	pollIteration := 0
+	svc := autoscaling.New(sess)
 
 	for {
 		if pollIteration >= (timeoutInDuration / pollEvery) {
 			break
 		}
 
-		success, err := pollFunc(describeActivityConfig, sess)
-
+		success, err := pollFunc(describeActivityConfig, svc)
 		if err != nil {
-			fmt.Println("ERROR waiting for ASG update!")
-			fmt.Println(err.Error())
+			log.WithError(err).Error("Error waiting for ASG update")
 			break
 		}
 
@@ -130,24 +119,23 @@ func handleASGActivityPolling(
 		}
 
 		time.Sleep(duration * time.Duration(pollEvery))
-
 		pollIteration++
 	}
 
 	return false
 }
 
-func pollASGActivitiesForSuccess(
+func checkActivitiesForSuccess(
 	describeActivityConfig *autoscaling.DescribeScalingActivitiesInput,
-	sess *session.Session,
+	svc autoscalingiface.AutoScalingAPI,
 ) (bool, error) {
 
-	// TODO ABSOLUTLEY DISCUSTING!!!!!
-	svc := autoscaling.New(sess)
-
 	resp, err := svc.DescribeScalingActivities(describeActivityConfig)
-
 	if err != nil {
+		log.WithFields(log.Fields{
+			"response": resp,
+			"err":      err,
+		}).Error("DescribeScalingActivities failed")
 		return false, err
 	}
 
@@ -162,7 +150,9 @@ func pollASGActivitiesForSuccess(
 	return finished, err
 }
 
-func getDescribeScalingActivitiesInput(activityIDs []*string, resourceName *string) *autoscaling.DescribeScalingActivitiesInput {
+func getDescribeScalingActivitiesInput(
+	activityIDs []*string,
+	resourceName *string) *autoscaling.DescribeScalingActivitiesInput {
 	return &autoscaling.DescribeScalingActivitiesInput{
 		ActivityIds:          activityIDs,
 		AutoScalingGroupName: resourceName,
@@ -170,7 +160,9 @@ func getDescribeScalingActivitiesInput(activityIDs []*string, resourceName *stri
 	}
 }
 
-func getEnterStandbyInput(instanceIDs []*string, resourceName *string) *autoscaling.EnterStandbyInput {
+func getEnterStandbyInput(
+	instanceIDs []*string,
+	resourceName *string) *autoscaling.EnterStandbyInput {
 	return &autoscaling.EnterStandbyInput{
 		AutoScalingGroupName:           resourceName,
 		ShouldDecrementDesiredCapacity: aws.Bool(true),
@@ -178,7 +170,8 @@ func getEnterStandbyInput(instanceIDs []*string, resourceName *string) *autoscal
 	}
 }
 
-func getAuotscalingGroupInstanceIDs(resp *autoscaling.DescribeAutoScalingGroupsOutput) []*string {
+func getAuotscalingGroupInstanceIDs(
+	resp *autoscaling.DescribeAutoScalingGroupsOutput) []*string {
 	instanceIDs := []*string{}
 
 	for _, instance := range resp.AutoScalingGroups[0].Instances {
