@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/aws/aws-sdk-go/aws"
+	"github.com/aws/aws-sdk-go/aws/session"
 	"github.com/aws/aws-sdk-go/service/autoscaling"
 	"github.com/stretchr/testify/assert"
 )
@@ -79,7 +80,8 @@ func TestGetDescribeScalingActivitiesInput(test *testing.T) {
 func TestHandleASGActivityPolling(test *testing.T) {
 	pollIteration := 0
 	mockConfig := &autoscaling.DescribeScalingActivitiesInput{}
-	pollFunc := func(*autoscaling.DescribeScalingActivitiesInput) (bool, error) {
+	mockSess := &session.Session{}
+	pollFunc := func(*autoscaling.DescribeScalingActivitiesInput, *session.Session) (bool, error) {
 		assert.Equal(test, pollIteration < 5, true)
 
 		pollIteration += 1
@@ -87,18 +89,19 @@ func TestHandleASGActivityPolling(test *testing.T) {
 		return (pollIteration == 4), nil
 	}
 
-	success := handleASGActivityPolling(mockConfig, pollFunc, 5, 1, time.Millisecond)
+	success := handleASGActivityPolling(mockConfig, pollFunc, mockSess, 5, 1, time.Millisecond)
 
 	assert.Equal(test, success, true)
 }
 
 func TestHandleASGActivityPollingWhenTimesOut(test *testing.T) {
 	mockConfig := &autoscaling.DescribeScalingActivitiesInput{}
-	pollFunc := func(*autoscaling.DescribeScalingActivitiesInput) (bool, error) {
+	mockSess := &session.Session{}
+	pollFunc := func(*autoscaling.DescribeScalingActivitiesInput, *session.Session) (bool, error) {
 		return false, nil
 	}
 
-	success := handleASGActivityPolling(mockConfig, pollFunc, 5, 1, time.Millisecond)
+	success := handleASGActivityPolling(mockConfig, pollFunc, mockSess, 5, 1, time.Millisecond)
 
 	assert.Equal(test, success, false)
 }
@@ -106,13 +109,14 @@ func TestHandleASGActivityPollingWhenTimesOut(test *testing.T) {
 func TestHandleASGActivityPollingErrorHandling(test *testing.T) {
 	pollIteration := 0
 	mockConfig := &autoscaling.DescribeScalingActivitiesInput{}
-	pollFunc := func(*autoscaling.DescribeScalingActivitiesInput) (bool, error) {
+	mockSess := &session.Session{}
+	pollFunc := func(*autoscaling.DescribeScalingActivitiesInput, *session.Session) (bool, error) {
 		pollIteration += 1
 
 		return false, errors.New("Test Error")
 	}
 
-	success := handleASGActivityPolling(mockConfig, pollFunc, 5, 1, time.Millisecond)
+	success := handleASGActivityPolling(mockConfig, pollFunc, mockSess, 5, 1, time.Millisecond)
 
 	assert.Equal(test, success, false)
 	assert.Equal(test, pollIteration, 1)
@@ -121,13 +125,14 @@ func TestHandleASGActivityPollingErrorHandling(test *testing.T) {
 func TestPollASGActivitiesForSuccess(test *testing.T) {
 	pollIteration := 0
 	mockConfig := &autoscaling.DescribeScalingActivitiesInput{}
-	pollFunc := func(*autoscaling.DescribeScalingActivitiesInput) (bool, error) {
+	mockSess := &session.Session{}
+	pollFunc := func(*autoscaling.DescribeScalingActivitiesInput, *session.Session) (bool, error) {
 		pollIteration += 1
 
 		return false, errors.New("Test Error")
 	}
 
-	success := handleASGActivityPolling(mockConfig, pollFunc, 5, 1, time.Millisecond)
+	success := handleASGActivityPolling(mockConfig, pollFunc, mockSess, 5, 1, time.Millisecond)
 
 	assert.Equal(test, success, false)
 	assert.Equal(test, pollIteration, 1)

@@ -12,7 +12,7 @@ import (
 	"os"
 )
 
-type PollASGActivities func(*autoscaling.DescribeScalingActivitiesInput) (bool, error)
+type PollASGActivities func(*autoscaling.DescribeScalingActivitiesInput, *session.Session) (bool, error)
 
 func main() {
 	fmt.Println("Checking Credentials...")
@@ -96,6 +96,7 @@ func AwsCredentials() string {
 func handleASGActivityPolling(
 	describeActivityConfig *autoscaling.DescribeScalingActivitiesInput,
 	pollFunc PollASGActivities,
+	sess *session.Session,
 	timeoutInDuration int,
 	pollEvery int,
 	duration time.Duration,
@@ -108,7 +109,7 @@ func handleASGActivityPolling(
 			break
 		}
 
-		success, err := pollFunc(describeActivityConfig)
+		success, err := pollFunc(describeActivityConfig, sess)
 
 		if err != nil {
 			fmt.Println("ERROR waiting for ASG update!")
@@ -130,10 +131,10 @@ func handleASGActivityPolling(
 
 func pollASGActivitiesForSuccess(
 	describeActivityConfig *autoscaling.DescribeScalingActivitiesInput,
+	sess *session.Session,
 ) (bool, error) {
 
 	// TODO ABSOLUTLEY DISCUSTING!!!!!
-	sess := session.Must(session.NewSession())
 	svc := autoscaling.New(sess)
 
 	resp, err := svc.DescribeScalingActivities(describeActivityConfig)
