@@ -2,6 +2,9 @@ package main
 
 import (
 	"errors"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"testing"
 	"time"
@@ -113,6 +116,31 @@ func TestGetDescribeScalingActivitiesInput(t *testing.T) {
 			nil)
 	}
 }
+
+/*
+func TestPollCheck(t *testing.T) {
+	pollIteration := 0
+	mockConfig := &autoscaling.DescribeScalingActivitiesInput{}
+	mockSess := unit.Session
+	checkFunc :=
+		func(
+			*autoscaling.DescribeScalingActivitiesInput,
+			autoscalingiface.AutoScalingAPI) (bool, error) {
+			assert.Equal(t, pollIteration < 5, true)
+			pollIteration++
+			return (pollIteration == 4), nil
+		}
+
+	success := pollCheck(
+		mockConfig,
+		checkFunc,
+		mockSess,
+		time.Millisecond*1,
+		time.Millisecond*5)
+
+	assert.Equal(t, success, true)
+}
+*/
 
 func TestHandleASGActivityPolling(t *testing.T) {
 	pollIteration := 0
@@ -226,6 +254,33 @@ func TestValidateAwsCredentialsAreMissing(t *testing.T) {
 	err := validateAwsCredentials()
 
 	assert.EqualError(t, err, "AWS credentials not set")
+}
+
+func TestCheckForContentAtURLInvalidUrl(t *testing.T) {
+	_, err := checkForContentAtURL("Invalid", "test")
+	assert.EqualError(t, err, "parse Invalid: invalid URI for request")
+}
+
+func TestCheckForContentAtURLIncorrectContent(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprintln(w, "not matching")
+	}))
+	defer ts.Close()
+
+	result, err := checkForContentAtURL(ts.URL, "test")
+	assert.Nil(t, err)
+	assert.False(t, result)
+}
+
+func TestCheckForContentAtURLCorrectContent(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprintln(w, "matching")
+	}))
+	defer ts.Close()
+
+	result, err := checkForContentAtURL(ts.URL, "matching")
+	assert.Nil(t, err)
+	assert.True(t, result)
 }
 
 func getInstanceList(instanceIDs []string) []*autoscaling.Instance {
