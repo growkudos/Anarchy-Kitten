@@ -15,17 +15,27 @@ import (
 	"github.com/aws/aws-sdk-go/aws/session"
 	"github.com/aws/aws-sdk-go/service/autoscaling"
 	"github.com/aws/aws-sdk-go/service/autoscaling/autoscalingiface"
-	// "github.com/aws/aws-sdk-go/service/ec2"
 )
 
 type pollASGActivities func(
 	*autoscaling.DescribeScalingActivitiesInput,
-	autoscalingiface.AutoScalingAPI) (bool, error)
+	autoscalingiface.AutoScalingAPI,
+	string,
+) (bool, error)
 
 func main() {
 	log.SetLevel(log.DebugLevel)
 	log.SetOutput(os.Stdout)
 
+	sess := session.Must(session.NewSession())
+	svc := autoscaling.New(sess)
+
+	os.Exit(do(svc))
+}
+
+func do(
+	svc autoscalingiface.AutoScalingAPI,
+) int {
 	exitCode := 1
 
 	// TODO pass in
@@ -38,8 +48,6 @@ func main() {
 	}
 
 	asgName := os.Getenv("ASG_NAME")
-	sess := session.Must(session.NewSession())
-	svc := autoscaling.New(sess)
 
 	instanceIDs := getInstancesInAutoScalingGroup(&asgName, svc)
 	enterStandbyInput := getEnterStandbyInput(instanceIDs, &asgName)
@@ -51,7 +59,14 @@ func main() {
 		// back into service.
 	}
 
-	result := waitForInstancesToEnterStandby(&asgName, enterStandbyOutput)
+	activityIDs := []*string{enterStandbyOutput.Activities[0].ActivityId}
+	result := waitForInstancesToReachSuccessfulStatus(
+		&asgName,
+		activityIDs,
+		svc,
+		60*time.Second,
+		1*time.Second) // TODO pass in durations
+
 	if result == true {
 		success, err2 := checkForContentAtURL(urlToCheck, contentToCheckFor)
 		if err2 != nil || success == false {
@@ -66,26 +81,13 @@ func main() {
 		log.Info("All instances in the autoscaling group did not enter standby")
 	}
 
-	// TODO return the machines to in service
-	exitStandbyArgs := autoscaling.ExitStandbyInput{
-		AutoScalingGroupName: &asgName,
-		InstanceIds:          instanceIDs,
-	}
+	exitCode = exitStandby(asgName, svc, instanceIDs, 60*time.Second, 1*time.Second)
 
-	exitStandbyOutput, err := svc.ExitStandby(&exitStandbyArgs)
-	if err != nil {
-		// TODO
-	}
+	log.WithFields(log.Fields{
+		"extCode": exitCode,
+	}).Info("Finished")
 
-	log.Debug(exitStandbyOutput)
-
-	// TODO Wait for instances to exit standby
-
-	// TODO check instances leave standby
-
-	log.Info("Success")
-
-	os.Exit(exitCode)
+	return exitCode
 }
 
 func checkForContentAtURL(rawurl string, content string) (bool, error) {
@@ -104,13 +106,53 @@ func checkForContentAtURL(rawurl string, content string) (bool, error) {
 	return exists, err
 }
 
-func waitForInstancesToEnterStandby(
-	asgName *string,
-	enterStandbyOutput *autoscaling.EnterStandbyOutput,
-) bool {
-	activityIDs := []*string{
-		enterStandbyOutput.Activities[0].ActivityId,
+func exitStandby(
+	asgName string,
+	svc autoscalingiface.AutoScalingAPI,
+	instanceIDs []*string,
+	timeout time.Duration,
+	pollEvery time.Duration,
+) int {
+	exitStandbyArgs := autoscaling.ExitStandbyInput{
+		AutoScalingGroupName: &asgName,
+		InstanceIds:          instanceIDs,
 	}
+
+	exitStandbyOutput, err := svc.ExitStandby(&exitStandbyArgs)
+	if err != nil {
+		log.WithFields(log.Fields{
+			"exitStandbyOutput": exitStandbyOutput,
+			"err":               err,
+		}).Error("Error calling ExitStandby")
+		return 1
+	}
+
+	activityIDs := []*string{exitStandbyOutput.Activities[0].ActivityId}
+
+	result := waitForInstancesToReachSuccessfulStatus(
+		&asgName,
+		activityIDs,
+		svc,
+		timeout,
+		pollEvery)
+	if result != true {
+		// TODO do we retry? Carry on?
+		log.Error("Instances failed to reach successful status")
+		return 1
+	}
+
+	// TODO check instances have left standby?
+
+	return 0 // TODO return 1 if an error
+}
+
+func waitForInstancesToReachSuccessfulStatus(
+	asgName *string,
+	activityIDs []*string,
+	svc autoscalingiface.AutoScalingAPI,
+	timeout time.Duration,
+	pollEvery time.Duration,
+) bool {
 
 	describeScalingActivitiesQueryParams := &autoscaling.DescribeScalingActivitiesInput{
 		ActivityIds:          activityIDs,
@@ -120,11 +162,11 @@ func waitForInstancesToEnterStandby(
 
 	return handleASGActivityPolling(
 		describeScalingActivitiesQueryParams,
-		checkActivitiesForSuccess,
-		session.New(),
-		42, // TODO pass in on commandline
-		1,  // TODO
-		time.Second)
+		checkActivitiesForStatus,
+		svc,
+		timeout, // TODO pass in on commandline
+		pollEvery,
+		"Successful")
 }
 
 func getInstancesInAutoScalingGroup(
@@ -142,7 +184,133 @@ func getInstancesInAutoScalingGroup(
 		log.WithError(err).Fatal("Coud not get instances in asg, DescribeAutoScalingGroups failed")
 	}
 
-	return getAuotscalingGroupInstanceIDs(resp)
+	return getAutoscalingGroupInstanceIDs(resp)
+}
+
+func handleASGActivityPolling(
+	describeActivityConfig *autoscaling.DescribeScalingActivitiesInput,
+	pollFunc pollASGActivities,
+	svc autoscalingiface.AutoScalingAPI,
+	timeout time.Duration,
+	pollEvery time.Duration,
+	statusCode string,
+) bool {
+
+	log.WithFields(log.Fields{
+		"describeActivityConfig": describeActivityConfig,
+	}).Debug("handleASGActivityPolling: ASG describe input")
+
+	var pollIteration int64
+
+	for {
+		if pollIteration >= (int64(timeout) / int64(pollEvery)) {
+			break
+		}
+
+		success, err := pollFunc(describeActivityConfig, svc, statusCode)
+		if err != nil {
+			log.WithError(err).Error("Error waiting for ASG update")
+			break
+		}
+
+		if success {
+			return true
+		}
+
+		time.Sleep(pollEvery)
+		pollIteration++
+	}
+
+	return false
+}
+
+func checkActivitiesForStatus(
+	describeActivityConfig *autoscaling.DescribeScalingActivitiesInput,
+	svc autoscalingiface.AutoScalingAPI,
+	statusCode string,
+) (bool, error) {
+
+	resp, err := svc.DescribeScalingActivities(describeActivityConfig)
+	if err != nil {
+		log.WithFields(log.Fields{
+			"response": resp,
+			"err":      err,
+		}).Error("DescribeScalingActivities failed")
+		return false, err
+	}
+
+	finished := true
+
+	for _, activity := range resp.Activities {
+		if *activity.StatusCode != statusCode {
+			finished = false
+		}
+	}
+
+	return finished, err
+}
+
+func getDescribeScalingActivitiesInput(
+	activityIDs []*string,
+	resourceName *string) *autoscaling.DescribeScalingActivitiesInput {
+	return &autoscaling.DescribeScalingActivitiesInput{
+		ActivityIds:          activityIDs,
+		AutoScalingGroupName: resourceName,
+		MaxRecords:           aws.Int64(1),
+	}
+}
+
+func getEnterStandbyInput(
+	instanceIDs []*string,
+	resourceName *string) *autoscaling.EnterStandbyInput {
+	ret := &autoscaling.EnterStandbyInput{
+		AutoScalingGroupName:           resourceName,
+		ShouldDecrementDesiredCapacity: aws.Bool(true),
+		InstanceIds:                    instanceIDs,
+	}
+
+	log.WithFields(log.Fields{
+		"EnterStandbyInput": ret,
+	}).Debug("Query parameters for stand by")
+
+	return ret
+}
+
+func getAutoscalingGroupInstanceIDs(
+	resp *autoscaling.DescribeAutoScalingGroupsOutput) []*string {
+	instanceIDs := []*string{}
+
+	for _, instance := range resp.AutoScalingGroups[0].Instances {
+		instanceIDs = append(instanceIDs, instance.InstanceId)
+	}
+
+	log.WithFields(log.Fields{
+		"instanceIDs": *instanceIDs[0],
+	}).Debug("Instances in auto scaling group")
+
+	return instanceIDs
+}
+
+func validateAwsCredentials() error {
+	log.Info("Checking Credentials...")
+	if isEnvVarSetWithValue("AWS_ACCESS_KEY_ID") &&
+		isEnvVarSetWithValue("AWS_SECRET_ACCESS_KEY") &&
+		isEnvVarSetWithValue("AWS_REGION") &&
+		isEnvVarSetWithValue("ASG_NAME") {
+		return nil
+	}
+
+	return errors.New("AWS credentials not set")
+}
+
+func isEnvVarSetWithValue(key string) bool {
+	val, ok := os.LookupEnv(key)
+	log.WithFields(log.Fields{
+		"key": key,
+		"val": val,
+		"ok":  ok,
+	}).Debug("isEnvVarSetWithValue")
+	return ok && val != ""
 }
 
 /*
@@ -183,129 +351,3 @@ func pollCheck(
 	return ret
 }
 */
-
-func handleASGActivityPolling(
-	describeActivityConfig *autoscaling.DescribeScalingActivitiesInput,
-	pollFunc pollASGActivities,
-	sess *session.Session,
-	timeoutInDuration int,
-	pollEvery int,
-	duration time.Duration,
-) bool {
-
-	log.WithFields(log.Fields{
-		"describeActivityConfig": describeActivityConfig,
-	}).Debug("handleASGActivityPolling: ASG describe input")
-
-	pollIteration := 0
-	svc := autoscaling.New(sess)
-
-	for {
-		if pollIteration >= (timeoutInDuration / pollEvery) {
-			break
-		}
-
-		success, err := pollFunc(describeActivityConfig, svc)
-		if err != nil {
-			log.WithError(err).Error("Error waiting for ASG update")
-			break
-		}
-
-		if success {
-			return true
-		}
-
-		time.Sleep(duration * time.Duration(pollEvery))
-		pollIteration++
-	}
-
-	return false
-}
-
-func checkActivitiesForSuccess(
-	describeActivityConfig *autoscaling.DescribeScalingActivitiesInput,
-	svc autoscalingiface.AutoScalingAPI,
-) (bool, error) {
-
-	resp, err := svc.DescribeScalingActivities(describeActivityConfig)
-	if err != nil {
-		log.WithFields(log.Fields{
-			"response": resp,
-			"err":      err,
-		}).Error("DescribeScalingActivities failed")
-		return false, err
-	}
-
-	finished := true
-
-	for _, activity := range resp.Activities {
-		if *activity.StatusCode != "Successful" {
-			finished = false
-		}
-	}
-
-	return finished, err
-}
-
-func getDescribeScalingActivitiesInput(
-	activityIDs []*string,
-	resourceName *string) *autoscaling.DescribeScalingActivitiesInput {
-	return &autoscaling.DescribeScalingActivitiesInput{
-		ActivityIds:          activityIDs,
-		AutoScalingGroupName: resourceName,
-		MaxRecords:           aws.Int64(1),
-	}
-}
-
-func getEnterStandbyInput(
-	instanceIDs []*string,
-	resourceName *string) *autoscaling.EnterStandbyInput {
-	ret := &autoscaling.EnterStandbyInput{
-		AutoScalingGroupName:           resourceName,
-		ShouldDecrementDesiredCapacity: aws.Bool(true),
-		InstanceIds:                    instanceIDs,
-	}
-
-	log.WithFields(log.Fields{
-		"EnterStandbyInput": ret,
-	}).Debug("Query parameters for stand by")
-
-	return ret
-}
-
-func getAuotscalingGroupInstanceIDs(
-	resp *autoscaling.DescribeAutoScalingGroupsOutput) []*string {
-	instanceIDs := []*string{}
-
-	for _, instance := range resp.AutoScalingGroups[0].Instances {
-		instanceIDs = append(instanceIDs, instance.InstanceId)
-	}
-
-	log.WithFields(log.Fields{
-		"instanceIDs": *instanceIDs[0],
-	}).Debug("Instances in auto scaling group")
-
-	return instanceIDs
-}
-
-func validateAwsCredentials() error {
-	log.Info("Checking Credentials...")
-	if isEnvVarSetWithValue("AWS_ACCESS_KEY_ID") &&
-		isEnvVarSetWithValue("AWS_SECRET_ACCESS_KEY") &&
-		isEnvVarSetWithValue("AWS_REGION") &&
-		isEnvVarSetWithValue("ASG_NAME") {
-		return nil
-	}
-
-	return errors.New("AWS credentials not set")
-}
-
-func isEnvVarSetWithValue(key string) bool {
-	val, ok := os.LookupEnv(key)
-	log.WithFields(log.Fields{
-		"key": key,
-		"val": val,
-		"ok":  ok,
-	}).Debug("isEnvVarSetWithValue")
-	return ok && val != ""
-}

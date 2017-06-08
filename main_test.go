@@ -9,19 +9,40 @@ import (
 	"testing"
 	"time"
 
+	log "github.com/sirupsen/logrus"
+
 	"github.com/aws/aws-sdk-go/aws"
-	"github.com/aws/aws-sdk-go/awstesting/unit"
 	"github.com/aws/aws-sdk-go/service/autoscaling"
 	"github.com/aws/aws-sdk-go/service/autoscaling/autoscalingiface"
 	"github.com/stretchr/testify/assert"
 )
 
-// TODO set debug level to panic
+func TestMain(m *testing.M) {
+	log.SetLevel(log.PanicLevel)
+	os.Exit(m.Run())
+}
 
 type mockAutoScalingClient struct {
 	autoscalingiface.AutoScalingAPI
-	Error   bool
+	Error   string
 	Success bool
+}
+
+func (m *mockAutoScalingClient) DescribeAutoScalingGroups(
+	*autoscaling.DescribeAutoScalingGroupsInput) (
+	*autoscaling.DescribeAutoScalingGroupsOutput, error) {
+
+	output := autoscaling.DescribeAutoScalingGroupsOutput{
+		AutoScalingGroups: []*autoscaling.Group{
+			&autoscaling.Group{Instances: []*autoscaling.Instance{
+				&autoscaling.Instance{InstanceId: aws.String("instance1")},
+				&autoscaling.Instance{InstanceId: aws.String("instance2")},
+				&autoscaling.Instance{InstanceId: aws.String("instance3")},
+			}},
+		},
+	}
+
+	return &output, nil
 }
 
 func (m *mockAutoScalingClient) DescribeScalingActivities(
@@ -37,14 +58,30 @@ func (m *mockAutoScalingClient) DescribeScalingActivities(
 	resp := &autoscaling.DescribeScalingActivitiesOutput{Activities: activities}
 
 	var err error
-	if m.Error == true {
+	if m.Error == "DescribeScalingActivities" {
 		err = errors.New("Error")
 	}
 
 	return resp, err
 }
 
-func TestGetAuotscalingGroupInstanceIDs(t *testing.T) {
+func (m *mockAutoScalingClient) ExitStandby(
+	*autoscaling.ExitStandbyInput) (*autoscaling.ExitStandbyOutput, error) {
+	ret := autoscaling.ExitStandbyOutput{
+		Activities: []*autoscaling.Activity{
+			&autoscaling.Activity{ActivityId: aws.String("activity1")},
+		},
+	}
+
+	var err error
+	if m.Error == "ExitStandby" {
+		err = errors.New("Error")
+	}
+
+	return &ret, err
+}
+
+func TestGetAutoscalingGroupInstanceIDs(t *testing.T) {
 	mockASGInstanceIds := []string{
 		"instanceIdOne",
 		"instanceIdTwo",
@@ -55,7 +92,22 @@ func TestGetAuotscalingGroupInstanceIDs(t *testing.T) {
 
 	resp := getMockDescribeAutoScalingGroupsOutput(mockASGInstanceIds)
 
-	instanceIDs := getAuotscalingGroupInstanceIDs(&resp)
+	instanceIDs := getAutoscalingGroupInstanceIDs(&resp)
+
+	for index, instanceID := range instanceIDs {
+		assert.Equal(t, *instanceID, mockASGInstanceIds[index], nil)
+	}
+}
+
+func TestGetInstancesInAutoScalingGroup(t *testing.T) {
+	mockASGInstanceIds := []string{
+		"instance1",
+		"instance2",
+		"instance3",
+	}
+
+	mockSvc := &mockAutoScalingClient{Success: true}
+	instanceIDs := getInstancesInAutoScalingGroup(aws.String("test"), mockSvc)
 
 	for index, instanceID := range instanceIDs {
 		assert.Equal(t, *instanceID, mockASGInstanceIds[index], nil)
@@ -145,31 +197,33 @@ func TestPollCheck(t *testing.T) {
 func TestHandleASGActivityPolling(t *testing.T) {
 	pollIteration := 0
 	mockConfig := &autoscaling.DescribeScalingActivitiesInput{}
-	mockSess := unit.Session
+	mockSvc := &mockAutoScalingClient{Success: true}
 	pollFunc :=
 		func(
 			*autoscaling.DescribeScalingActivitiesInput,
-			autoscalingiface.AutoScalingAPI) (bool, error) {
+			autoscalingiface.AutoScalingAPI,
+			string) (bool, error) {
 			assert.Equal(t, pollIteration < 5, true)
 			pollIteration++
 			return (pollIteration == 4), nil
 		}
 
-	success := handleASGActivityPolling(mockConfig, pollFunc, mockSess, 5, 1, time.Millisecond)
+	success := handleASGActivityPolling(mockConfig, pollFunc, mockSvc, 5*time.Millisecond, 1*time.Millisecond, "Successful")
 
 	assert.Equal(t, success, true)
 }
 
 func TestHandleASGActivityPollingWhenTimesOut(t *testing.T) {
 	mockConfig := &autoscaling.DescribeScalingActivitiesInput{}
-	mockSess := unit.Session
+	mockSvc := &mockAutoScalingClient{Success: true}
 	pollFunc := func(
 		*autoscaling.DescribeScalingActivitiesInput,
-		autoscalingiface.AutoScalingAPI) (bool, error) {
+		autoscalingiface.AutoScalingAPI,
+		string) (bool, error) {
 		return false, nil
 	}
 
-	success := handleASGActivityPolling(mockConfig, pollFunc, mockSess, 5, 1, time.Millisecond)
+	success := handleASGActivityPolling(mockConfig, pollFunc, mockSvc, 5*time.Millisecond, 1*time.Millisecond, "Successful")
 
 	assert.Equal(t, success, false)
 }
@@ -177,16 +231,17 @@ func TestHandleASGActivityPollingWhenTimesOut(t *testing.T) {
 func TestHandleASGActivityPollingErrorHandling(t *testing.T) {
 	pollIteration := 0
 	mockConfig := &autoscaling.DescribeScalingActivitiesInput{}
-	mockSess := unit.Session
+	mockSvc := &mockAutoScalingClient{Success: true}
 	pollFunc := func(
 		*autoscaling.DescribeScalingActivitiesInput,
-		autoscalingiface.AutoScalingAPI) (bool, error) {
+		autoscalingiface.AutoScalingAPI,
+		string) (bool, error) {
 		pollIteration++
 
 		return false, errors.New("Test Error")
 	}
 
-	success := handleASGActivityPolling(mockConfig, pollFunc, mockSess, 5, 1, time.Millisecond)
+	success := handleASGActivityPolling(mockConfig, pollFunc, mockSvc, 5*time.Millisecond, 1*time.Millisecond, "Successful")
 
 	assert.Equal(t, success, false)
 	assert.Equal(t, pollIteration, 1)
@@ -194,8 +249,8 @@ func TestHandleASGActivityPollingErrorHandling(t *testing.T) {
 
 func TestPollASGActivitiesForSuccessError(t *testing.T) {
 	mockConfig := &autoscaling.DescribeScalingActivitiesInput{}
-	mockSvc := &mockAutoScalingClient{Error: true}
-	success, err := checkActivitiesForSuccess(mockConfig, mockSvc)
+	mockSvc := &mockAutoScalingClient{Error: "DescribeScalingActivities"}
+	success, err := checkActivitiesForStatus(mockConfig, mockSvc, "Successful")
 
 	assert.Equal(t, success, false)
 	assert.EqualError(t, err, "Error")
@@ -204,7 +259,7 @@ func TestPollASGActivitiesForSuccessError(t *testing.T) {
 func TestPollASGActivitiesForSuccessNotFinished(t *testing.T) {
 	mockConfig := &autoscaling.DescribeScalingActivitiesInput{}
 	mockSvc := &mockAutoScalingClient{}
-	success, err := checkActivitiesForSuccess(mockConfig, mockSvc)
+	success, err := checkActivitiesForStatus(mockConfig, mockSvc, "Successful")
 
 	assert.Equal(t, false, success)
 	assert.Equal(t, nil, err)
@@ -214,10 +269,23 @@ func TestPollASGActivitiesForSuccess(t *testing.T) {
 	mockConfig := &autoscaling.DescribeScalingActivitiesInput{}
 
 	mockSvc := &mockAutoScalingClient{Success: true}
-	success, err := checkActivitiesForSuccess(mockConfig, mockSvc)
+	success, err := checkActivitiesForStatus(mockConfig, mockSvc, "Successful")
 
 	assert.Equal(t, success, true)
 	assert.Equal(t, err, nil)
+}
+
+func TestWaitForInstancesToReachSuccessfulState(t *testing.T) {
+
+	mockSvc := &mockAutoScalingClient{Success: true}
+	success := waitForInstancesToReachSuccessfulStatus(
+		aws.String("test"),
+		[]*string{aws.String("test")},
+		mockSvc,
+		10*time.Millisecond,
+		1*time.Millisecond)
+
+	assert.Equal(t, success, true)
 }
 
 func TestValidateAwsCredentialsValid(t *testing.T) {
@@ -281,6 +349,39 @@ func TestCheckForContentAtURLCorrectContent(t *testing.T) {
 	result, err := checkForContentAtURL(ts.URL, "matching")
 	assert.Nil(t, err)
 	assert.True(t, result)
+}
+
+func TestExitStandbySuccess(t *testing.T) {
+	mockSvc := &mockAutoScalingClient{Success: true}
+	instances := []*string{aws.String("instance1")}
+	assert.Equal(t, 0, exitStandby(
+		"test",
+		mockSvc,
+		instances,
+		9*time.Millisecond,
+		1*time.Millisecond))
+}
+
+func TestExitStandbyExitCallFail(t *testing.T) {
+	mockSvc := &mockAutoScalingClient{Error: "ExitStandby"}
+	instances := []*string{aws.String("instance1")}
+	assert.Equal(t, 1, exitStandby(
+		"test",
+		mockSvc,
+		instances,
+		9*time.Millisecond,
+		1*time.Millisecond))
+}
+
+func TestExitStandbyWaitFail(t *testing.T) {
+	mockSvc := &mockAutoScalingClient{Error: "DescribeScalingActivities"}
+	instances := []*string{aws.String("instance1")}
+	assert.Equal(t, 1, exitStandby(
+		"test",
+		mockSvc,
+		instances,
+		9*time.Millisecond,
+		1*time.Millisecond))
 }
 
 func getInstanceList(instanceIDs []string) []*autoscaling.Instance {
