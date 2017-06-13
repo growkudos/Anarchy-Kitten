@@ -2,6 +2,7 @@ package main
 
 import (
 	"errors"
+	"flag"
 	"io/ioutil"
 	"net/http"
 	"net/url"
@@ -30,17 +31,24 @@ func main() {
 	sess := session.Must(session.NewSession())
 	svc := autoscaling.New(sess)
 
-	// TODO pass in
-	urlToCheck := "http://www.growkudos.com"
-	contentToCheckFor := "Maintenance"
+	url, content, timeout, poll := getFlags(flag.CommandLine, os.Args[1:])
 
-	// TODO pass in durations
 	os.Exit(do(
 		svc,
-		urlToCheck,
-		contentToCheckFor,
-		60*time.Second,
-		1*time.Second))
+		url,
+		content,
+		(time.Duration(timeout))*time.Second,
+		(time.Duration(poll))*time.Second))
+}
+
+func getFlags(fs *flag.FlagSet, args []string) (string, string, int, int) {
+	urlPtr := flag.String("url", "http://www.growkudos.com", "The url to check")
+	contentPtr := flag.String("content", "Maintenance", "The content to check for")
+	timeoutPtr := flag.Int("timeout", 600, "The timeout for the content poll check in seconds")
+	pollPtr := flag.Int("poll", 10, "The content poll interval in seconds")
+	fs.Parse(args)
+
+	return *urlPtr, *contentPtr, *timeoutPtr, *pollPtr
 }
 
 func do(
@@ -350,42 +358,3 @@ func isEnvVarSetWithValue(key string) bool {
 	}).Debug("isEnvVarSetWithValue")
 	return ok && val != ""
 }
-
-/*
-func pollCheck(
-	describeActivityConfig *autoscaling.DescribeScalingActivitiesInput,
-	checkFunc pollASGActivities,
-	sess *session.Session,
-	duration time.Duration,
-	timeout time.Duration,
-) bool {
-
-	svc := autoscaling.New(sess)
-	c := make(chan bool)
-	ticker := time.NewTicker(duration)
-	go func() {
-		for range ticker.C {
-			check, err := checkFunc(describeActivityConfig, svc)
-			if check == true {
-				c <- true
-			}
-
-			if err != nil {
-				c <- false
-			}
-		}
-	}()
-
-	ret := false
-	select {
-	case result := <-c:
-		// May have succeeded or failed
-		ret = result
-	case <-time.After(timeout):
-		// timeout
-	}
-
-	ticker.Stop()
-	return ret
-}
-*/

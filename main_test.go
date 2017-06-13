@@ -2,6 +2,7 @@ package main
 
 import (
 	"errors"
+	"flag"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -184,31 +185,6 @@ func TestGetDescribeScalingActivitiesInput(t *testing.T) {
 			nil)
 	}
 }
-
-/*
-func TestPollCheck(t *testing.T) {
-	pollIteration := 0
-	mockConfig := &autoscaling.DescribeScalingActivitiesInput{}
-	mockSess := unit.Session
-	checkFunc :=
-		func(
-			*autoscaling.DescribeScalingActivitiesInput,
-			autoscalingiface.AutoScalingAPI) (bool, error) {
-			assert.Equal(t, pollIteration < 5, true)
-			pollIteration++
-			return (pollIteration == 4), nil
-		}
-
-	success := pollCheck(
-		mockConfig,
-		checkFunc,
-		mockSess,
-		time.Millisecond*1,
-		time.Millisecond*5)
-
-	assert.Equal(t, success, true)
-}
-*/
 
 func TestHandleASGActivityPolling(t *testing.T) {
 	pollIteration := 0
@@ -488,6 +464,27 @@ func TestDoExitStandbyFail(t *testing.T) {
 	err = os.Unsetenv("AWS_REGION")
 	err = os.Unsetenv("ASG_NAME")
 	assert.Nil(t, err)
+}
+
+func TestGetFlagsDefault(t *testing.T) {
+	fs := flag.NewFlagSet("test", flag.ContinueOnError)
+	url, content, timeout, poll := getFlags(fs, nil)
+	assert.Equal(t, "http://www.growkudos.com", url)
+	assert.Equal(t, "Maintenance", content)
+	assert.Equal(t, 600, timeout)
+	assert.Equal(t, 10, poll)
+}
+
+func TestGetFlagsSetValues(t *testing.T) {
+	fs := flag.NewFlagSet("test", flag.ContinueOnError)
+
+	args := []string{"-url=TEST", "-content=CONTENT", "-timeout=42", "-poll=84"}
+	url, content, timeout, poll := getFlags(fs, args)
+
+	assert.Equal(t, "http://www.growkudos.com", url)
+	assert.Equal(t, "Maintenance", content)
+	assert.Equal(t, 600, timeout)
+	assert.Equal(t, 10, poll)
 }
 
 func getInstanceList(instanceIDs []string) []*autoscaling.Instance {
