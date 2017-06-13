@@ -65,6 +65,22 @@ func (m *mockAutoScalingClient) DescribeScalingActivities(
 	return resp, err
 }
 
+func (m *mockAutoScalingClient) EnterStandby(
+	input *autoscaling.EnterStandbyInput) (*autoscaling.EnterStandbyOutput, error) {
+	ret := autoscaling.EnterStandbyOutput{
+		Activities: []*autoscaling.Activity{
+			&autoscaling.Activity{ActivityId: aws.String("activity1")},
+		},
+	}
+
+	var err error
+	if m.Error == "EnterStandby" {
+		err = errors.New("Error")
+	}
+
+	return &ret, err
+}
+
 func (m *mockAutoScalingClient) ExitStandby(
 	*autoscaling.ExitStandbyInput) (*autoscaling.ExitStandbyOutput, error) {
 	ret := autoscaling.ExitStandbyOutput{
@@ -325,8 +341,7 @@ func TestValidateAwsCredentialsAreMissing(t *testing.T) {
 }
 
 func TestCheckForContentAtURLInvalidUrl(t *testing.T) {
-	_, err := checkForContentAtURL("Invalid", "test")
-	assert.EqualError(t, err, "parse Invalid: invalid URI for request")
+	assert.Equal(t, 1, checkForContentAtURL("Invalid", "test"))
 }
 
 func TestCheckForContentAtURLIncorrectContent(t *testing.T) {
@@ -335,9 +350,7 @@ func TestCheckForContentAtURLIncorrectContent(t *testing.T) {
 	}))
 	defer ts.Close()
 
-	result, err := checkForContentAtURL(ts.URL, "test")
-	assert.Nil(t, err)
-	assert.False(t, result)
+	assert.Equal(t, 1, checkForContentAtURL(ts.URL, "test"))
 }
 
 func TestCheckForContentAtURLCorrectContent(t *testing.T) {
@@ -346,9 +359,7 @@ func TestCheckForContentAtURLCorrectContent(t *testing.T) {
 	}))
 	defer ts.Close()
 
-	result, err := checkForContentAtURL(ts.URL, "matching")
-	assert.Nil(t, err)
-	assert.True(t, result)
+	assert.Equal(t, 0, checkForContentAtURL(ts.URL, "matching"))
 }
 
 func TestExitStandbySuccess(t *testing.T) {
@@ -382,6 +393,101 @@ func TestExitStandbyWaitFail(t *testing.T) {
 		instances,
 		9*time.Millisecond,
 		1*time.Millisecond))
+}
+
+func TestDoSuccess(t *testing.T) {
+	err := os.Setenv("AWS_ACCESS_KEY_ID", "AWS_ACCESS_KEY_ID_VALUE")
+	err = os.Setenv("AWS_SECRET_ACCESS_KEY", "AWS_SECRET_ACCESS_KEY_VALUE")
+	err = os.Setenv("AWS_REGION", "AWS_REGION_VALUE")
+	err = os.Setenv("ASG_NAME", "ASG_NAME_VALUE")
+	assert.Nil(t, err)
+
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprintln(w, "matching")
+	}))
+	defer ts.Close()
+
+	mockSvc := &mockAutoScalingClient{Success: true}
+	exitCode := do(mockSvc, ts.URL, "matching", 3*time.Millisecond, 1*time.Millisecond)
+	assert.Equal(t, 0, exitCode)
+
+	err = os.Unsetenv("AWS_ACCESS_KEY_ID")
+	err = os.Unsetenv("AWS_SECRET_ACCESS_KEY")
+	err = os.Unsetenv("AWS_REGION")
+	err = os.Unsetenv("ASG_NAME")
+	assert.Nil(t, err)
+}
+
+func TestDoEnterStandbyFail(t *testing.T) {
+	err := os.Setenv("AWS_ACCESS_KEY_ID", "AWS_ACCESS_KEY_ID_VALUE")
+	err = os.Setenv("AWS_SECRET_ACCESS_KEY", "AWS_SECRET_ACCESS_KEY_VALUE")
+	err = os.Setenv("AWS_REGION", "AWS_REGION_VALUE")
+	err = os.Setenv("ASG_NAME", "ASG_NAME_VALUE")
+	assert.Nil(t, err)
+
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprintln(w, "matching")
+	}))
+	defer ts.Close()
+
+	mockSvc := &mockAutoScalingClient{Error: "EnterStandby", Success: true}
+	exitCode := do(mockSvc, ts.URL, "matching", 3*time.Millisecond, 1*time.Millisecond)
+	assert.Equal(t, 1, exitCode)
+	// TODO test that recovery is attempted
+
+	err = os.Unsetenv("AWS_ACCESS_KEY_ID")
+	err = os.Unsetenv("AWS_SECRET_ACCESS_KEY")
+	err = os.Unsetenv("AWS_REGION")
+	err = os.Unsetenv("ASG_NAME")
+	assert.Nil(t, err)
+}
+
+func TestDoContentCheckFail(t *testing.T) {
+	err := os.Setenv("AWS_ACCESS_KEY_ID", "AWS_ACCESS_KEY_ID_VALUE")
+	err = os.Setenv("AWS_SECRET_ACCESS_KEY", "AWS_SECRET_ACCESS_KEY_VALUE")
+	err = os.Setenv("AWS_REGION", "AWS_REGION_VALUE")
+	err = os.Setenv("ASG_NAME", "ASG_NAME_VALUE")
+	assert.Nil(t, err)
+
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprintln(w, "matching")
+	}))
+	defer ts.Close()
+
+	mockSvc := &mockAutoScalingClient{Success: true}
+	exitCode := do(mockSvc, ts.URL, "notmatching", 3*time.Millisecond, 1*time.Millisecond)
+	assert.Equal(t, 1, exitCode)
+	// TODO test that recovery is attempted
+
+	err = os.Unsetenv("AWS_ACCESS_KEY_ID")
+	err = os.Unsetenv("AWS_SECRET_ACCESS_KEY")
+	err = os.Unsetenv("AWS_REGION")
+	err = os.Unsetenv("ASG_NAME")
+	assert.Nil(t, err)
+}
+
+func TestDoExitStandbyFail(t *testing.T) {
+	err := os.Setenv("AWS_ACCESS_KEY_ID", "AWS_ACCESS_KEY_ID_VALUE")
+	err = os.Setenv("AWS_SECRET_ACCESS_KEY", "AWS_SECRET_ACCESS_KEY_VALUE")
+	err = os.Setenv("AWS_REGION", "AWS_REGION_VALUE")
+	err = os.Setenv("ASG_NAME", "ASG_NAME_VALUE")
+	assert.Nil(t, err)
+
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprintln(w, "matching")
+	}))
+	defer ts.Close()
+
+	mockSvc := &mockAutoScalingClient{Error: "ExitStandby", Success: true}
+	exitCode := do(mockSvc, ts.URL, "matching", 3*time.Millisecond, 1*time.Millisecond)
+	assert.Equal(t, 1, exitCode)
+	// TODO test that recovery is attempted
+
+	err = os.Unsetenv("AWS_ACCESS_KEY_ID")
+	err = os.Unsetenv("AWS_SECRET_ACCESS_KEY")
+	err = os.Unsetenv("AWS_REGION")
+	err = os.Unsetenv("ASG_NAME")
+	assert.Nil(t, err)
 }
 
 func getInstanceList(instanceIDs []string) []*autoscaling.Instance {

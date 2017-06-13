@@ -30,17 +30,27 @@ func main() {
 	sess := session.Must(session.NewSession())
 	svc := autoscaling.New(sess)
 
-	os.Exit(do(svc))
+	// TODO pass in
+	urlToCheck := "http://www.growkudos.com"
+	contentToCheckFor := "Maintenance"
+
+	// TODO pass in durations
+	os.Exit(do(
+		svc,
+		urlToCheck,
+		contentToCheckFor,
+		60*time.Second,
+		1*time.Second))
 }
 
 func do(
 	svc autoscalingiface.AutoScalingAPI,
+	urlToCheck string,
+	contentToCheckFor string,
+	timeout time.Duration,
+	pollEvery time.Duration,
 ) int {
-	exitCode := 1
-
-	// TODO pass in
-	urlToCheck := "http://www.growkudos.com"
-	contentToCheckFor := "Maintenance"
+	exitCode := 0
 
 	err := validateAwsCredentials()
 	if err != nil {
@@ -53,10 +63,15 @@ func do(
 	enterStandbyInput := getEnterStandbyInput(instanceIDs, &asgName)
 	enterStandbyOutput, err := svc.EnterStandby(enterStandbyInput)
 	if err != nil {
-		log.WithError(err).Error("Error entering instances into standby")
+		log.WithFields(log.Fields{
+			"err":                err,
+			"enterStandbyOutput": enterStandbyOutput,
+		}).Error("Error entering instances into standby")
 		// We'll let the logic carry on, which may mean that the wait for
 		// standby will timeout but will continue to attempt to put everything
 		// back into service.
+		// TODO or call Recover()?
+		exitCode = 1
 	}
 
 	activityIDs := []*string{enterStandbyOutput.Activities[0].ActivityId}
@@ -64,24 +79,18 @@ func do(
 		&asgName,
 		activityIDs,
 		svc,
-		60*time.Second,
-		1*time.Second) // TODO pass in durations
+		timeout,
+		pollEvery)
 
 	if result == true {
-		success, err2 := checkForContentAtURL(urlToCheck, contentToCheckFor)
-		if err2 != nil || success == false {
-			log.WithFields(log.Fields{
-				"err":     err2,
-				"success": success,
-			}).Warn("Content not found at URL. Failover failed.")
-		} else {
-			exitCode = 0
-		}
+		exitCode += checkForContentAtURL(urlToCheck, contentToCheckFor)
 	} else {
 		log.Info("All instances in the autoscaling group did not enter standby")
+		exitCode++
 	}
 
-	exitCode = exitStandby(asgName, svc, instanceIDs, 60*time.Second, 1*time.Second)
+	exitCode += exitStandby(asgName, svc, instanceIDs, 60*time.Second, 1*time.Second)
+	// TODO keep trying until success?
 
 	log.WithFields(log.Fields{
 		"extCode": exitCode,
@@ -90,20 +99,49 @@ func do(
 	return exitCode
 }
 
-func checkForContentAtURL(rawurl string, content string) (bool, error) {
+func checkForContentAtURL(rawurl string, content string) int {
+	log.WithFields(log.Fields{
+		"rawurl":  rawurl,
+		"content": content,
+	}).Debug("checkForContentAtURL")
+
 	_, err := url.ParseRequestURI(rawurl)
 	if err != nil {
-		return false, err
+		log.
+			WithError(err).
+			WithField("rawurl", rawurl).
+			Error("Could not parse the URL")
+		return 1
 	}
 
 	res, err := http.Get(rawurl)
 	if err != nil {
-		return false, err
+		log.
+			WithError(err).
+			WithField("rawurl", rawurl).
+			Error("Could not get the URL")
+		return 1
 	}
 
 	body, err := ioutil.ReadAll(res.Body)
+	if err != nil {
+		log.
+			WithError(err).
+			WithField("res", res).
+			Error("Could not read the response body")
+		return 1
+	}
+
 	exists := strings.Contains(string(body), content)
-	return exists, err
+	if !exists {
+		log.WithFields(log.Fields{
+			"body":    string(body),
+			"content": content,
+		}).Error("Did not find the expected content at the failover url")
+		return 1
+	}
+
+	return 0
 }
 
 func exitStandby(
