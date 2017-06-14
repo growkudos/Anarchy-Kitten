@@ -25,24 +25,44 @@ func TestMain(m *testing.M) {
 
 type mockAutoScalingClient struct {
 	autoscalingiface.AutoScalingAPI
-	Error   string
-	Success bool
+	Error         string
+	Success       bool
+	ServiceStatus []string
+	describeCount int
 }
 
 func (m *mockAutoScalingClient) DescribeAutoScalingGroups(
 	*autoscaling.DescribeAutoScalingGroupsInput) (
 	*autoscaling.DescribeAutoScalingGroupsOutput, error) {
 
+	status := "InService"
+
+	log.WithFields(log.Fields{
+		"ServiceStatus": m.ServiceStatus,
+		"describeCount": m.describeCount,
+	}).Debug("mock describe")
+
+	if len(m.ServiceStatus) > m.describeCount {
+		status = m.ServiceStatus[m.describeCount]
+	}
+
 	output := autoscaling.DescribeAutoScalingGroupsOutput{
 		AutoScalingGroups: []*autoscaling.Group{
 			&autoscaling.Group{Instances: []*autoscaling.Instance{
-				&autoscaling.Instance{InstanceId: aws.String("instance1")},
-				&autoscaling.Instance{InstanceId: aws.String("instance2")},
-				&autoscaling.Instance{InstanceId: aws.String("instance3")},
+				&autoscaling.Instance{
+					InstanceId:     aws.String("instance1"),
+					LifecycleState: aws.String(status)},
+				&autoscaling.Instance{
+					InstanceId:     aws.String("instance2"),
+					LifecycleState: aws.String(status)},
+				&autoscaling.Instance{
+					InstanceId:     aws.String("instance3"),
+					LifecycleState: aws.String(status)},
 			}},
 		},
 	}
 
+	m.describeCount++
 	return &output, nil
 }
 
@@ -98,7 +118,7 @@ func (m *mockAutoScalingClient) ExitStandby(
 	return &ret, err
 }
 
-func TestGetAutoscalingGroupInstanceIDs(t *testing.T) {
+func TestGetInstanceIDs(t *testing.T) {
 	mockASGInstanceIds := []string{
 		"instanceIdOne",
 		"instanceIdTwo",
@@ -108,8 +128,9 @@ func TestGetAutoscalingGroupInstanceIDs(t *testing.T) {
 	}
 
 	resp := getMockDescribeAutoScalingGroupsOutput(mockASGInstanceIds)
+	log.Debug(resp)
 
-	instanceIDs := getAutoscalingGroupInstanceIDs(&resp)
+	instanceIDs := getInstanceIDs(resp.AutoScalingGroups[0].Instances)
 
 	for index, instanceID := range instanceIDs {
 		assert.Equal(t, *instanceID, mockASGInstanceIds[index], nil)
@@ -124,10 +145,10 @@ func TestGetInstancesInAutoScalingGroup(t *testing.T) {
 	}
 
 	mockSvc := &mockAutoScalingClient{Success: true}
-	instanceIDs := getInstancesInAutoScalingGroup(aws.String("test"), mockSvc)
+	instances := getInstancesInAutoScalingGroup(aws.String("test"), mockSvc)
 
-	for index, instanceID := range instanceIDs {
-		assert.Equal(t, *instanceID, mockASGInstanceIds[index], nil)
+	for index, instance := range instances {
+		assert.Equal(t, mockASGInstanceIds[index], *(*instance).InstanceId, nil)
 	}
 }
 
@@ -339,6 +360,7 @@ func TestCheckForContentAtURLCorrectContent(t *testing.T) {
 }
 
 func TestExitStandbySuccess(t *testing.T) {
+	isSuccess := func(in bool) bool { return in }
 	mockSvc := &mockAutoScalingClient{Success: true}
 	instances := []*string{aws.String("instance1")}
 	assert.Equal(t, 0, exitStandby(
@@ -346,10 +368,12 @@ func TestExitStandbySuccess(t *testing.T) {
 		mockSvc,
 		instances,
 		9*time.Millisecond,
-		1*time.Millisecond))
+		1*time.Millisecond,
+		isSuccess))
 }
 
 func TestExitStandbyExitCallFail(t *testing.T) {
+	isSuccess := func(in bool) bool { return in }
 	mockSvc := &mockAutoScalingClient{Error: "ExitStandby"}
 	instances := []*string{aws.String("instance1")}
 	assert.Equal(t, 1, exitStandby(
@@ -357,18 +381,42 @@ func TestExitStandbyExitCallFail(t *testing.T) {
 		mockSvc,
 		instances,
 		9*time.Millisecond,
-		1*time.Millisecond))
+		1*time.Millisecond,
+		isSuccess))
 }
 
 func TestExitStandbyWaitFail(t *testing.T) {
+	isSuccess := func(in bool) bool { return in }
 	mockSvc := &mockAutoScalingClient{Error: "DescribeScalingActivities"}
 	instances := []*string{aws.String("instance1")}
-	assert.Equal(t, 1, exitStandby(
+	assert.Equal(t, 3, exitStandby(
 		"test",
 		mockSvc,
 		instances,
 		9*time.Millisecond,
-		1*time.Millisecond))
+		1*time.Millisecond,
+		isSuccess))
+}
+
+func TestExitStandbySecondAttempt(t *testing.T) {
+	loop := 0
+	isSuccess := func(in bool) bool {
+		loop++
+		if loop == 2 {
+			return true
+		}
+		return false
+	}
+
+	mockSvc := &mockAutoScalingClient{Error: "DescribeScalingActivities"}
+	instances := []*string{aws.String("instance1")}
+	assert.Equal(t, 0, exitStandby(
+		"test",
+		mockSvc,
+		instances,
+		9*time.Millisecond,
+		1*time.Millisecond,
+		isSuccess))
 }
 
 func TestDoSuccess(t *testing.T) {
@@ -409,7 +457,6 @@ func TestDoEnterStandbyFail(t *testing.T) {
 	mockSvc := &mockAutoScalingClient{Error: "EnterStandby", Success: true}
 	exitCode := do(mockSvc, ts.URL, "matching", 3*time.Millisecond, 1*time.Millisecond)
 	assert.Equal(t, 1, exitCode)
-	// TODO test that recovery is attempted
 
 	err = os.Unsetenv("AWS_ACCESS_KEY_ID")
 	err = os.Unsetenv("AWS_SECRET_ACCESS_KEY")
@@ -454,7 +501,11 @@ func TestDoExitStandbyFail(t *testing.T) {
 	}))
 	defer ts.Close()
 
-	mockSvc := &mockAutoScalingClient{Error: "ExitStandby", Success: true}
+	mockSvc := &mockAutoScalingClient{
+		Error:         "ExitStandby",
+		Success:       true,
+		ServiceStatus: []string{"Pending", "Pending", "InService"},
+	}
 	exitCode := do(mockSvc, ts.URL, "matching", 3*time.Millisecond, 1*time.Millisecond)
 	assert.Equal(t, 1, exitCode)
 	// TODO test that recovery is attempted
@@ -485,6 +536,45 @@ func TestGetFlagsSetValues(t *testing.T) {
 	assert.Equal(t, "CONTENT", content)
 	assert.Equal(t, 42, timeout)
 	assert.Equal(t, 84, poll)
+}
+
+func TestAreAllInstancesInServiceAllInService(t *testing.T) {
+	instances := []*autoscaling.Instance{
+		&autoscaling.Instance{
+			LifecycleState: aws.String("InService")},
+		&autoscaling.Instance{
+			LifecycleState: aws.String("InService")},
+		&autoscaling.Instance{
+			LifecycleState: aws.String("InService")},
+	}
+
+	assert.True(t, areAllInstancesInService(instances))
+}
+
+func TestAreAllInstancesInServiceNoneInService(t *testing.T) {
+	instances := []*autoscaling.Instance{
+		&autoscaling.Instance{
+			LifecycleState: aws.String("Pending")},
+		&autoscaling.Instance{
+			LifecycleState: aws.String("Pending")},
+		&autoscaling.Instance{
+			LifecycleState: aws.String("Pending")},
+	}
+
+	assert.False(t, areAllInstancesInService(instances))
+}
+
+func TestAreAllInstancesInServiceSomeInService(t *testing.T) {
+	instances := []*autoscaling.Instance{
+		&autoscaling.Instance{
+			LifecycleState: aws.String("InService")},
+		&autoscaling.Instance{
+			LifecycleState: aws.String("Pending")},
+		&autoscaling.Instance{
+			LifecycleState: aws.String("Pending")},
+	}
+
+	assert.False(t, areAllInstancesInService(instances))
 }
 
 func getInstanceList(instanceIDs []string) []*autoscaling.Instance {

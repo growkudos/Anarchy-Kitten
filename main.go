@@ -67,24 +67,46 @@ func do(
 
 	asgName := os.Getenv("ASG_NAME")
 
-	instanceIDs := getInstancesInAutoScalingGroup(&asgName, svc)
+	instanceIDs := getInstanceIDs(getInstancesInAutoScalingGroup(&asgName, svc))
 	result := enterStandby(asgName, svc, instanceIDs, timeout, pollEvery)
+	exitCode += result
 
-	if result == true {
+	if result == 0 {
 		exitCode += checkForContentAtURL(urlToCheck, contentToCheckFor)
-	} else {
-		log.Info("All instances in the autoscaling group did not enter standby")
-		exitCode++
 	}
 
-	exitCode += exitStandby(asgName, svc, instanceIDs, 60*time.Second, 1*time.Second)
-	// TODO keep trying until success?
+	// This tries forever to get all the instances back into service
+	for !areAllInstancesInService(
+		getInstancesInAutoScalingGroup(&asgName, svc)) {
+
+		exitCode += exitStandby(
+			asgName,
+			svc,
+			instanceIDs,
+			60*time.Second,
+			1*time.Second,
+			func(in bool) bool { return in },
+		)
+	}
 
 	log.WithFields(log.Fields{
 		"extCode": exitCode,
 	}).Info("Finished")
 
 	return exitCode
+}
+
+func areAllInstancesInService(instances []*autoscaling.Instance) bool {
+	log.WithField("instances", instances).Debug("areAllInstancesInService")
+	for _, i := range instances {
+		if *(i.LifecycleState) != "InService" {
+			log.WithField("instances", instances).Info("Some instances not in service")
+			return false
+		}
+	}
+
+	log.Info("All instances now in service")
+	return true
 }
 
 func checkForContentAtURL(rawurl string, content string) int {
@@ -138,7 +160,8 @@ func enterStandby(
 	instanceIDs []*string,
 	timeout time.Duration,
 	pollEvery time.Duration,
-) bool {
+) int {
+	ret := 0
 	enterStandbyInput := getEnterStandbyInput(instanceIDs, &asgName)
 	enterStandbyOutput, err := svc.EnterStandby(enterStandbyInput)
 	if err != nil {
@@ -149,8 +172,7 @@ func enterStandby(
 		// We'll let the logic carry on, which may mean that the wait for
 		// standby will timeout but will continue to attempt to put everything
 		// back into service.
-		// TODO or call Recover()?
-		return false
+		ret++
 	}
 
 	activityIDs := []*string{enterStandbyOutput.Activities[0].ActivityId}
@@ -161,7 +183,12 @@ func enterStandby(
 		timeout,
 		pollEvery)
 
-	return result
+	if result == false {
+		log.Info("Some (or all) of the instances in the autoscaling group did not enter standby")
+		ret++
+	}
+
+	return ret
 }
 
 func exitStandby(
@@ -170,7 +197,9 @@ func exitStandby(
 	instanceIDs []*string,
 	timeout time.Duration,
 	pollEvery time.Duration,
+	isSuccess func(bool) bool,
 ) int {
+	log.WithField("instanceIDs", instanceIDs).Info("Attempting to exit standby")
 	exitStandbyArgs := autoscaling.ExitStandbyInput{
 		AutoScalingGroupName: &asgName,
 		InstanceIds:          instanceIDs,
@@ -187,21 +216,26 @@ func exitStandby(
 
 	activityIDs := []*string{exitStandbyOutput.Activities[0].ActivityId}
 
-	result := waitForInstancesToReachSuccessfulStatus(
-		&asgName,
-		activityIDs,
-		svc,
-		timeout,
-		pollEvery)
-	if result != true {
-		// TODO do we retry? Carry on?
+	ret := 0
+	retryAttempts := 3
+	for i := 0; i < retryAttempts; i++ {
+		result := waitForInstancesToReachSuccessfulStatus(
+			&asgName,
+			activityIDs,
+			svc,
+			timeout,
+			pollEvery)
+
+		if isSuccess(result) {
+			ret = 0
+			break
+		}
+
 		log.Error("Instances failed to reach successful status")
-		return 1
+		ret++
 	}
 
-	// TODO check instances have left standby?
-
-	return 0 // TODO return 1 if an error
+	return ret
 }
 
 func waitForInstancesToReachSuccessfulStatus(
@@ -229,7 +263,7 @@ func waitForInstancesToReachSuccessfulStatus(
 
 func getInstancesInAutoScalingGroup(
 	asgName *string,
-	svc autoscalingiface.AutoScalingAPI) []*string {
+	svc autoscalingiface.AutoScalingAPI) []*autoscaling.Instance {
 	instanceIDQueryParams := &autoscaling.DescribeAutoScalingGroupsInput{
 		AutoScalingGroupNames: []*string{
 			asgName,
@@ -242,7 +276,7 @@ func getInstancesInAutoScalingGroup(
 		log.WithError(err).Fatal("Coud not get instances in asg, DescribeAutoScalingGroups failed")
 	}
 
-	return getAutoscalingGroupInstanceIDs(resp)
+	return resp.AutoScalingGroups[0].Instances
 }
 
 func handleASGActivityPolling(
@@ -334,11 +368,11 @@ func getEnterStandbyInput(
 	return ret
 }
 
-func getAutoscalingGroupInstanceIDs(
-	resp *autoscaling.DescribeAutoScalingGroupsOutput) []*string {
+func getInstanceIDs(
+	instances []*autoscaling.Instance) []*string {
 	instanceIDs := []*string{}
 
-	for _, instance := range resp.AutoScalingGroups[0].Instances {
+	for _, instance := range instances {
 		instanceIDs = append(instanceIDs, instance.InstanceId)
 	}
 
