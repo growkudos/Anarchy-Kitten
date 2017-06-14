@@ -256,7 +256,7 @@ func waitForInstancesToReachSuccessfulStatus(
 		describeScalingActivitiesQueryParams,
 		checkActivitiesForStatus,
 		svc,
-		timeout, // TODO pass in on commandline
+		timeout,
 		pollEvery,
 		"Successful")
 }

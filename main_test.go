@@ -480,7 +480,6 @@ func TestDoContentCheckFail(t *testing.T) {
 	mockSvc := &mockAutoScalingClient{Success: true}
 	exitCode := do(mockSvc, ts.URL, "notmatching", 3*time.Millisecond, 1*time.Millisecond)
 	assert.Equal(t, 1, exitCode)
-	// TODO test that recovery is attempted
 
 	err = os.Unsetenv("AWS_ACCESS_KEY_ID")
 	err = os.Unsetenv("AWS_SECRET_ACCESS_KEY")
@@ -508,7 +507,6 @@ func TestDoExitStandbyFail(t *testing.T) {
 	}
 	exitCode := do(mockSvc, ts.URL, "matching", 3*time.Millisecond, 1*time.Millisecond)
 	assert.Equal(t, 1, exitCode)
-	// TODO test that recovery is attempted
 
 	err = os.Unsetenv("AWS_ACCESS_KEY_ID")
 	err = os.Unsetenv("AWS_SECRET_ACCESS_KEY")
