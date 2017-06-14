@@ -481,10 +481,10 @@ func TestGetFlagsSetValues(t *testing.T) {
 	args := []string{"-url=TEST", "-content=CONTENT", "-timeout=42", "-poll=84"}
 	url, content, timeout, poll := getFlags(fs, args)
 
-	assert.Equal(t, "http://www.growkudos.com", url)
-	assert.Equal(t, "Maintenance", content)
-	assert.Equal(t, 600, timeout)
-	assert.Equal(t, 10, poll)
+	assert.Equal(t, "TEST", url)
+	assert.Equal(t, "CONTENT", content)
+	assert.Equal(t, 42, timeout)
+	assert.Equal(t, 84, poll)
 }
 
 func getInstanceList(instanceIDs []string) []*autoscaling.Instance {

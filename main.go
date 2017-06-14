@@ -42,10 +42,10 @@ func main() {
 }
 
 func getFlags(fs *flag.FlagSet, args []string) (string, string, int, int) {
-	urlPtr := flag.String("url", "http://www.growkudos.com", "The url to check")
-	contentPtr := flag.String("content", "Maintenance", "The content to check for")
-	timeoutPtr := flag.Int("timeout", 600, "The timeout for the content poll check in seconds")
-	pollPtr := flag.Int("poll", 10, "The content poll interval in seconds")
+	urlPtr := fs.String("url", "http://www.growkudos.com", "The url to check")
+	contentPtr := fs.String("content", "Maintenance", "The content to check for")
+	timeoutPtr := fs.Int("timeout", 600, "The timeout for the content poll check in seconds")
+	pollPtr := fs.Int("poll", 10, "The content poll interval in seconds")
 	fs.Parse(args)
 
 	return *urlPtr, *contentPtr, *timeoutPtr, *pollPtr
@@ -68,27 +68,7 @@ func do(
 	asgName := os.Getenv("ASG_NAME")
 
 	instanceIDs := getInstancesInAutoScalingGroup(&asgName, svc)
-	enterStandbyInput := getEnterStandbyInput(instanceIDs, &asgName)
-	enterStandbyOutput, err := svc.EnterStandby(enterStandbyInput)
-	if err != nil {
-		log.WithFields(log.Fields{
-			"err":                err,
-			"enterStandbyOutput": enterStandbyOutput,
-		}).Error("Error entering instances into standby")
-		// We'll let the logic carry on, which may mean that the wait for
-		// standby will timeout but will continue to attempt to put everything
-		// back into service.
-		// TODO or call Recover()?
-		exitCode = 1
-	}
-
-	activityIDs := []*string{enterStandbyOutput.Activities[0].ActivityId}
-	result := waitForInstancesToReachSuccessfulStatus(
-		&asgName,
-		activityIDs,
-		svc,
-		timeout,
-		pollEvery)
+	result := enterStandby(asgName, svc, instanceIDs, timeout, pollEvery)
 
 	if result == true {
 		exitCode += checkForContentAtURL(urlToCheck, contentToCheckFor)
@@ -150,6 +130,38 @@ func checkForContentAtURL(rawurl string, content string) int {
 	}
 
 	return 0
+}
+
+func enterStandby(
+	asgName string,
+	svc autoscalingiface.AutoScalingAPI,
+	instanceIDs []*string,
+	timeout time.Duration,
+	pollEvery time.Duration,
+) bool {
+	enterStandbyInput := getEnterStandbyInput(instanceIDs, &asgName)
+	enterStandbyOutput, err := svc.EnterStandby(enterStandbyInput)
+	if err != nil {
+		log.WithFields(log.Fields{
+			"err":                err,
+			"enterStandbyOutput": enterStandbyOutput,
+		}).Error("Error entering instances into standby")
+		// We'll let the logic carry on, which may mean that the wait for
+		// standby will timeout but will continue to attempt to put everything
+		// back into service.
+		// TODO or call Recover()?
+		return false
+	}
+
+	activityIDs := []*string{enterStandbyOutput.Activities[0].ActivityId}
+	result := waitForInstancesToReachSuccessfulStatus(
+		&asgName,
+		activityIDs,
+		svc,
+		timeout,
+		pollEvery)
+
+	return result
 }
 
 func exitStandby(
