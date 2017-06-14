@@ -60,12 +60,11 @@ func do(
 ) int {
 	exitCode := 0
 
+	asgName := os.Getenv("ASG_NAME")
 	err := validateAwsCredentials()
 	if err != nil {
 		log.WithError(err).Fatal("AWS environment variables needed")
 	}
-
-	asgName := os.Getenv("ASG_NAME")
 
 	instanceIDs := getInstanceIDs(getInstancesInAutoScalingGroup(&asgName, svc))
 	result := enterStandby(asgName, svc, instanceIDs, timeout, pollEvery)
