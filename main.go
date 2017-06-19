@@ -1,6 +1,7 @@
 package main
 
 import (
+	"crypto/tls"
 	"errors"
 	"flag"
 	"io/ioutil"
@@ -31,24 +32,30 @@ func main() {
 	sess := session.Must(session.NewSession())
 	svc := autoscaling.New(sess)
 
-	url, content, timeout, poll := getFlags(flag.CommandLine, os.Args[1:])
+	url, content, timeout, poll, user, password, insecure := getFlags(flag.CommandLine, os.Args[1:])
 
 	os.Exit(do(
 		svc,
 		url,
 		content,
 		(time.Duration(timeout))*time.Second,
-		(time.Duration(poll))*time.Second))
+		(time.Duration(poll))*time.Second,
+		user,
+		password,
+		insecure))
 }
 
-func getFlags(fs *flag.FlagSet, args []string) (string, string, int, int) {
+func getFlags(fs *flag.FlagSet, args []string) (string, string, int, int, string, string, bool) {
 	urlPtr := fs.String("url", "http://www.growkudos.com", "The url to check")
 	contentPtr := fs.String("content", "Maintenance", "The content to check for")
 	timeoutPtr := fs.Int("timeout", 600, "The timeout for the content poll check in seconds")
 	pollPtr := fs.Int("poll", 10, "The content poll interval in seconds")
+	userPtr := fs.String("user", "", "A user for basic authentication")
+	pwdPtr := fs.String("pwd", "", "The password for the basic auth user")
+	insecurePtr := fs.Bool("insecure", false, "Whether to ignore certificate TLS errors")
 	fs.Parse(args)
 
-	return *urlPtr, *contentPtr, *timeoutPtr, *pollPtr
+	return *urlPtr, *contentPtr, *timeoutPtr, *pollPtr, *userPtr, *pwdPtr, *insecurePtr
 }
 
 func do(
@@ -57,6 +64,9 @@ func do(
 	contentToCheckFor string,
 	timeout time.Duration,
 	pollEvery time.Duration,
+	user string,
+	password string,
+	insecure bool,
 ) int {
 	exitCode := 0
 
@@ -71,7 +81,12 @@ func do(
 	exitCode += result
 
 	if result == 0 {
-		exitCode += checkForContentAtURL(urlToCheck, contentToCheckFor)
+		exitCode += checkForContentAtURL(
+			urlToCheck,
+			contentToCheckFor,
+			user,
+			password,
+			false)
 	}
 
 	// This tries forever to get all the instances back into service
@@ -108,7 +123,13 @@ func areAllInstancesInService(instances []*autoscaling.Instance) bool {
 	return true
 }
 
-func checkForContentAtURL(rawurl string, content string) int {
+func checkForContentAtURL(
+	rawurl string,
+	content string,
+	user string,
+	password string,
+	insecure bool,
+) int {
 	log.WithFields(log.Fields{
 		"rawurl":  rawurl,
 		"content": content,
@@ -123,7 +144,7 @@ func checkForContentAtURL(rawurl string, content string) int {
 		return 1
 	}
 
-	res, err := http.Get(rawurl)
+	res, err := getURL(rawurl, user, password, insecure)
 	if err != nil {
 		log.
 			WithError(err).
@@ -151,6 +172,38 @@ func checkForContentAtURL(rawurl string, content string) int {
 	}
 
 	return 0
+}
+
+func getURL(
+	url string,
+	user string,
+	password string,
+	insecure bool) (*http.Response, error) {
+	req, err := http.NewRequest("GET", url, nil)
+	if err != nil {
+		log.WithError(err).Error("Creating request")
+		return nil, err
+	}
+
+	if user != "" {
+		req.SetBasicAuth(user, password)
+	}
+
+	client := &http.Client{}
+
+	if insecure {
+		tr := &http.Transport{
+			TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
+		}
+		client.Transport = tr
+	}
+
+	response, err := client.Do(req)
+	if err != nil {
+		log.WithError(err).Error("Request")
+	}
+
+	return response, err
 }
 
 func enterStandby(
@@ -310,6 +363,7 @@ func handleASGActivityPolling(
 
 		time.Sleep(pollEvery)
 		pollIteration++
+		log.WithField("poll", pollIteration).Info("Polling")
 	}
 
 	return false
@@ -388,6 +442,7 @@ func validateAwsCredentials() error {
 		isEnvVarSetWithValue("AWS_SECRET_ACCESS_KEY") &&
 		isEnvVarSetWithValue("AWS_REGION") &&
 		isEnvVarSetWithValue("ASG_NAME") {
+		log.Info("Credentials OK")
 		return nil
 	}
 

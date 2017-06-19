@@ -4,6 +4,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io/ioutil"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -338,7 +339,7 @@ func TestValidateAwsCredentialsAreMissing(t *testing.T) {
 }
 
 func TestCheckForContentAtURLInvalidUrl(t *testing.T) {
-	assert.Equal(t, 1, checkForContentAtURL("Invalid", "test"))
+	assert.Equal(t, 1, checkForContentAtURL("Invalid", "test", "", "", false))
 }
 
 func TestCheckForContentAtURLIncorrectContent(t *testing.T) {
@@ -347,7 +348,7 @@ func TestCheckForContentAtURLIncorrectContent(t *testing.T) {
 	}))
 	defer ts.Close()
 
-	assert.Equal(t, 1, checkForContentAtURL(ts.URL, "test"))
+	assert.Equal(t, 1, checkForContentAtURL(ts.URL, "test", "", "", false))
 }
 
 func TestCheckForContentAtURLCorrectContent(t *testing.T) {
@@ -356,7 +357,67 @@ func TestCheckForContentAtURLCorrectContent(t *testing.T) {
 	}))
 	defer ts.Close()
 
-	assert.Equal(t, 0, checkForContentAtURL(ts.URL, "matching"))
+	assert.Equal(t, 0, checkForContentAtURL(ts.URL, "matching", "", "", false))
+}
+
+func TestGetURLSecureNoAuth(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprintln(w, "matching")
+	}))
+	defer ts.Close()
+
+	resp, err := getURL(ts.URL, "", "", false)
+	assert.Nil(t, err)
+	assert.NotNil(t, resp)
+	assert.Equal(t, 200, resp.StatusCode)
+	body, err := ioutil.ReadAll(resp.Body)
+	assert.Nil(t, err)
+	assert.Equal(t, "matching\n", string(body))
+}
+
+func TestGetURLSecureAuth(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		user, password, ok := r.BasicAuth()
+		assert.True(t, ok)
+		assert.Equal(t, "USER", user)
+		assert.Equal(t, "PASSWORD", password)
+	}))
+	defer ts.Close()
+
+	resp, err := getURL(ts.URL, "USER", "PASSWORD", false)
+	assert.Nil(t, err)
+	assert.NotNil(t, resp)
+	assert.Equal(t, 200, resp.StatusCode)
+}
+
+func TestGetURLInsecureAuth(t *testing.T) {
+	ts := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		user, password, ok := r.BasicAuth()
+		assert.True(t, ok)
+		assert.Equal(t, "USER", user)
+		assert.Equal(t, "PASSWORD", password)
+	}))
+	defer ts.Close()
+
+	resp, err := getURL(ts.URL, "USER", "PASSWORD", true)
+	assert.Nil(t, err)
+	assert.NotNil(t, resp)
+	assert.Equal(t, 200, resp.StatusCode)
+}
+
+func TestGetURLTLSInsecureNoAuth(t *testing.T) {
+	ts := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprintln(w, "matching")
+	}))
+	defer ts.Close()
+
+	resp, err := getURL(ts.URL, "", "", true)
+	assert.Nil(t, err)
+	assert.NotNil(t, resp)
+	assert.Equal(t, 200, resp.StatusCode)
+	body, err := ioutil.ReadAll(resp.Body)
+	assert.Nil(t, err)
+	assert.Equal(t, "matching\n", string(body))
 }
 
 func TestExitStandbySuccess(t *testing.T) {
@@ -432,7 +493,7 @@ func TestDoSuccess(t *testing.T) {
 	defer ts.Close()
 
 	mockSvc := &mockAutoScalingClient{Success: true}
-	exitCode := do(mockSvc, ts.URL, "matching", 3*time.Millisecond, 1*time.Millisecond)
+	exitCode := do(mockSvc, ts.URL, "matching", 3*time.Millisecond, 1*time.Millisecond, "", "", false)
 	assert.Equal(t, 0, exitCode)
 
 	err = os.Unsetenv("AWS_ACCESS_KEY_ID")
@@ -455,7 +516,7 @@ func TestDoEnterStandbyFail(t *testing.T) {
 	defer ts.Close()
 
 	mockSvc := &mockAutoScalingClient{Error: "EnterStandby", Success: true}
-	exitCode := do(mockSvc, ts.URL, "matching", 3*time.Millisecond, 1*time.Millisecond)
+	exitCode := do(mockSvc, ts.URL, "matching", 3*time.Millisecond, 1*time.Millisecond, "", "", false)
 	assert.Equal(t, 1, exitCode)
 
 	err = os.Unsetenv("AWS_ACCESS_KEY_ID")
@@ -478,7 +539,7 @@ func TestDoContentCheckFail(t *testing.T) {
 	defer ts.Close()
 
 	mockSvc := &mockAutoScalingClient{Success: true}
-	exitCode := do(mockSvc, ts.URL, "notmatching", 3*time.Millisecond, 1*time.Millisecond)
+	exitCode := do(mockSvc, ts.URL, "notmatching", 3*time.Millisecond, 1*time.Millisecond, "", "", false)
 	assert.Equal(t, 1, exitCode)
 
 	err = os.Unsetenv("AWS_ACCESS_KEY_ID")
@@ -505,7 +566,7 @@ func TestDoExitStandbyFail(t *testing.T) {
 		Success:       true,
 		ServiceStatus: []string{"Pending", "Pending", "InService"},
 	}
-	exitCode := do(mockSvc, ts.URL, "matching", 3*time.Millisecond, 1*time.Millisecond)
+	exitCode := do(mockSvc, ts.URL, "matching", 3*time.Millisecond, 1*time.Millisecond, "", "", false)
 	assert.Equal(t, 1, exitCode)
 
 	err = os.Unsetenv("AWS_ACCESS_KEY_ID")
@@ -517,23 +578,36 @@ func TestDoExitStandbyFail(t *testing.T) {
 
 func TestGetFlagsDefault(t *testing.T) {
 	fs := flag.NewFlagSet("test", flag.ContinueOnError)
-	url, content, timeout, poll := getFlags(fs, nil)
+	url, content, timeout, poll, user, password, insecure := getFlags(fs, nil)
 	assert.Equal(t, "http://www.growkudos.com", url)
 	assert.Equal(t, "Maintenance", content)
 	assert.Equal(t, 600, timeout)
 	assert.Equal(t, 10, poll)
+	assert.Equal(t, "", user)
+	assert.Equal(t, "", password)
+	assert.Equal(t, false, insecure)
 }
 
 func TestGetFlagsSetValues(t *testing.T) {
 	fs := flag.NewFlagSet("test", flag.ContinueOnError)
 
-	args := []string{"-url=TEST", "-content=CONTENT", "-timeout=42", "-poll=84"}
-	url, content, timeout, poll := getFlags(fs, args)
+	args := []string{
+		"-url=TEST",
+		"-content=CONTENT",
+		"-timeout=42",
+		"-poll=84",
+		"-user=USER",
+		"-pwd=PASSWORD",
+		"-insecure=true"}
+	url, content, timeout, poll, user, password, insecure := getFlags(fs, args)
 
 	assert.Equal(t, "TEST", url)
 	assert.Equal(t, "CONTENT", content)
 	assert.Equal(t, 42, timeout)
 	assert.Equal(t, 84, poll)
+	assert.Equal(t, "USER", user)
+	assert.Equal(t, "PASSWORD", password)
+	assert.Equal(t, true, insecure)
 }
 
 func TestAreAllInstancesInServiceAllInService(t *testing.T) {
