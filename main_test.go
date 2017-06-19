@@ -493,7 +493,8 @@ func TestDoSuccess(t *testing.T) {
 	defer ts.Close()
 
 	mockSvc := &mockAutoScalingClient{Success: true}
-	exitCode := do(mockSvc, ts.URL, "matching", 3*time.Millisecond, 1*time.Millisecond, "", "", false)
+	check := contentCheck{url: ts.URL, content: "matching"}
+	exitCode := do(mockSvc, check, 3*time.Millisecond, 1*time.Millisecond)
 	assert.Equal(t, 0, exitCode)
 
 	err = os.Unsetenv("AWS_ACCESS_KEY_ID")
@@ -516,7 +517,8 @@ func TestDoEnterStandbyFail(t *testing.T) {
 	defer ts.Close()
 
 	mockSvc := &mockAutoScalingClient{Error: "EnterStandby", Success: true}
-	exitCode := do(mockSvc, ts.URL, "matching", 3*time.Millisecond, 1*time.Millisecond, "", "", false)
+	check := contentCheck{url: ts.URL, content: "matching"}
+	exitCode := do(mockSvc, check, 3*time.Millisecond, 1*time.Millisecond)
 	assert.Equal(t, 1, exitCode)
 
 	err = os.Unsetenv("AWS_ACCESS_KEY_ID")
@@ -539,7 +541,8 @@ func TestDoContentCheckFail(t *testing.T) {
 	defer ts.Close()
 
 	mockSvc := &mockAutoScalingClient{Success: true}
-	exitCode := do(mockSvc, ts.URL, "notmatching", 3*time.Millisecond, 1*time.Millisecond, "", "", false)
+	check := contentCheck{url: ts.URL, content: "notMatching"}
+	exitCode := do(mockSvc, check, 3*time.Millisecond, 1*time.Millisecond)
 	assert.Equal(t, 1, exitCode)
 
 	err = os.Unsetenv("AWS_ACCESS_KEY_ID")
@@ -566,7 +569,8 @@ func TestDoExitStandbyFail(t *testing.T) {
 		Success:       true,
 		ServiceStatus: []string{"Pending", "Pending", "InService"},
 	}
-	exitCode := do(mockSvc, ts.URL, "matching", 3*time.Millisecond, 1*time.Millisecond, "", "", false)
+	check := contentCheck{url: ts.URL, content: "matching"}
+	exitCode := do(mockSvc, check, 3*time.Millisecond, 1*time.Millisecond)
 	assert.Equal(t, 1, exitCode)
 
 	err = os.Unsetenv("AWS_ACCESS_KEY_ID")

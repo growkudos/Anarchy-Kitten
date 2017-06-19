@@ -19,6 +19,14 @@ import (
 	"github.com/aws/aws-sdk-go/service/autoscaling/autoscalingiface"
 )
 
+type contentCheck struct {
+	url      string
+	content  string
+	user     string
+	password string
+	insecure bool
+}
+
 type pollASGActivities func(
 	*autoscaling.DescribeScalingActivitiesInput,
 	autoscalingiface.AutoScalingAPI,
@@ -36,13 +44,9 @@ func main() {
 
 	os.Exit(do(
 		svc,
-		url,
-		content,
+		contentCheck{url: url, content: content, user: user, password: password, insecure: insecure},
 		(time.Duration(timeout))*time.Second,
-		(time.Duration(poll))*time.Second,
-		user,
-		password,
-		insecure))
+		(time.Duration(poll))*time.Second))
 }
 
 func getFlags(fs *flag.FlagSet, args []string) (string, string, int, int, string, string, bool) {
@@ -60,13 +64,9 @@ func getFlags(fs *flag.FlagSet, args []string) (string, string, int, int, string
 
 func do(
 	svc autoscalingiface.AutoScalingAPI,
-	urlToCheck string,
-	contentToCheckFor string,
+	check contentCheck,
 	timeout time.Duration,
 	pollEvery time.Duration,
-	user string,
-	password string,
-	insecure bool,
 ) int {
 	exitCode := 0
 
@@ -82,11 +82,12 @@ func do(
 
 	if result == 0 {
 		exitCode += checkForContentAtURL(
-			urlToCheck,
-			contentToCheckFor,
-			user,
-			password,
-			false)
+			check.url,
+			check.content,
+			check.user,
+			check.password,
+			check.insecure,
+		)
 	}
 
 	// This tries forever to get all the instances back into service
