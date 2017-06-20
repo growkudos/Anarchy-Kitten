@@ -46,8 +46,8 @@ func main() {
 	os.Exit(do(
 		svc,
 		contentCheck{url: url, content: content, user: user, password: password, insecure: insecure},
-		(time.Duration(timeout))*time.Second,
-		(time.Duration(poll))*time.Second))
+		(time.Duration(poll))*time.Second,
+		(time.Duration(timeout))*time.Second))
 }
 
 func getFlags(fs *flag.FlagSet, args []string) (string, string, int, int, string, string, bool) {
@@ -66,8 +66,8 @@ func getFlags(fs *flag.FlagSet, args []string) (string, string, int, int, string
 func do(
 	svc autoscalingiface.AutoScalingAPI,
 	check contentCheck,
+	poll time.Duration,
 	timeout time.Duration,
-	pollEvery time.Duration,
 ) int {
 	exitCode := 0
 
@@ -78,17 +78,11 @@ func do(
 	}
 
 	instanceIDs := getInstanceIDs(getInstancesInAutoScalingGroup(&asgName, svc))
-	result := enterStandby(asgName, svc, instanceIDs, timeout, pollEvery)
+	result := enterStandby(asgName, svc, instanceIDs, poll, timeout)
 	exitCode += result
 
 	if result == 0 {
-		exitCode += checkForContentAtURL(
-			check.url,
-			check.content,
-			check.user,
-			check.password,
-			check.insecure,
-		)
+		exitCode += pollForContent(check, poll, timeout, checkForContentAtURL)
 	}
 
 	// This tries forever to get all the instances back into service
@@ -99,8 +93,8 @@ func do(
 			asgName,
 			svc,
 			instanceIDs,
-			60*time.Second,
-			1*time.Second,
+			poll,
+			timeout,
 			func(in bool) bool { return in },
 		)
 	}
@@ -125,32 +119,56 @@ func areAllInstancesInService(instances []*autoscaling.Instance) bool {
 	return true
 }
 
-func checkForContentAtURL(
-	rawurl string,
-	content string,
-	user string,
-	password string,
-	insecure bool,
+func pollForContent(
+	content contentCheck,
+	poll time.Duration,
+	timeout time.Duration,
+	check func(contentCheck) int,
 ) int {
+
+	done := make(chan bool)
+	ticker := time.NewTicker(poll)
+	go func() {
+		for t := range ticker.C {
+			log.WithField("t", t).Debug("Poll for content check")
+			if check(content) == 0 {
+				done <- true
+			}
+		}
+	}()
+
+	select {
+	case _ = <-done:
+		ticker.Stop()
+		log.Info("Content check polling finished")
+		return 0
+	case <-time.After(timeout):
+		ticker.Stop()
+		log.Warn("Content check polling timed out")
+		return 1
+	}
+}
+
+func checkForContentAtURL(c contentCheck) int {
 	log.WithFields(log.Fields{
-		"rawurl":  rawurl,
-		"content": content,
+		"rawurl":  c.url,
+		"content": c.content,
 	}).Debug("checkForContentAtURL")
 
-	_, err := url.ParseRequestURI(rawurl)
+	_, err := url.ParseRequestURI(c.url)
 	if err != nil {
 		log.
 			WithError(err).
-			WithField("rawurl", rawurl).
+			WithField("rawurl", c.url).
 			Error("Could not parse the URL")
 		return 1
 	}
 
-	res, err := getURL(rawurl, user, password, insecure)
+	res, err := getURL(c.url, c.user, c.password, c.insecure)
 	if err != nil {
 		log.
 			WithError(err).
-			WithField("rawurl", rawurl).
+			WithField("rawurl", c.url).
 			Error("Could not get the URL")
 		return 1
 	}
@@ -164,12 +182,12 @@ func checkForContentAtURL(
 		return 1
 	}
 
-	exists := strings.Contains(string(body), content)
+	exists := strings.Contains(string(body), c.content)
 	if !exists {
 		log.WithFields(log.Fields{
 			"res":     res,
 			"body":    string(body),
-			"content": content,
+			"content": c.content,
 		}).Error("Did not find the expected content at the failover url")
 		return 1
 	}
@@ -213,8 +231,8 @@ func enterStandby(
 	asgName string,
 	svc autoscalingiface.AutoScalingAPI,
 	instanceIDs []*string,
+	poll time.Duration,
 	timeout time.Duration,
-	pollEvery time.Duration,
 ) int {
 	log.WithField("instanceIDs", instanceIDs).Info("Attempting to enter standby")
 
@@ -237,8 +255,8 @@ func enterStandby(
 		&asgName,
 		activityIDs,
 		svc,
-		timeout,
-		pollEvery)
+		poll,
+		timeout)
 
 	if result == false {
 		log.
@@ -258,8 +276,8 @@ func exitStandby(
 	asgName string,
 	svc autoscalingiface.AutoScalingAPI,
 	instanceIDs []*string,
+	poll time.Duration,
 	timeout time.Duration,
-	pollEvery time.Duration,
 	isSuccess func(bool) bool,
 ) int {
 	log.WithField("instanceIDs", instanceIDs).Info("Attempting to exit standby")
@@ -286,8 +304,8 @@ func exitStandby(
 			&asgName,
 			activityIDs,
 			svc,
-			timeout,
-			pollEvery)
+			poll,
+			timeout)
 
 		if isSuccess(result) {
 			log.WithField("instanceIDs", instanceIDs).Info("Instances exited standby")
@@ -306,8 +324,8 @@ func waitForInstancesToReachSuccessfulStatus(
 	asgName *string,
 	activityIDs []*string,
 	svc autoscalingiface.AutoScalingAPI,
+	poll time.Duration,
 	timeout time.Duration,
-	pollEvery time.Duration,
 ) bool {
 
 	describeScalingActivitiesQueryParams := &autoscaling.DescribeScalingActivitiesInput{
@@ -320,8 +338,8 @@ func waitForInstancesToReachSuccessfulStatus(
 		describeScalingActivitiesQueryParams,
 		checkActivitiesForStatus,
 		svc,
+		poll,
 		timeout,
-		pollEvery,
 		"Successful")
 }
 
@@ -347,8 +365,8 @@ func handleASGActivityPolling(
 	describeActivityConfig *autoscaling.DescribeScalingActivitiesInput,
 	pollFunc pollASGActivities,
 	svc autoscalingiface.AutoScalingAPI,
+	poll time.Duration,
 	timeout time.Duration,
-	pollEvery time.Duration,
 	statusCode string,
 ) bool {
 
@@ -359,7 +377,7 @@ func handleASGActivityPolling(
 	var pollIteration int64
 
 	for {
-		if pollIteration >= (int64(timeout) / int64(pollEvery)) {
+		if pollIteration >= (int64(timeout) / int64(poll)) {
 			break
 		}
 
@@ -373,9 +391,9 @@ func handleASGActivityPolling(
 			return true
 		}
 
-		time.Sleep(pollEvery)
+		time.Sleep(poll)
 		pollIteration++
-		log.WithField("poll", pollIteration).Info("Polling")
+		log.WithField("poll", pollIteration).Info("Polling ASG status")
 	}
 
 	return false
