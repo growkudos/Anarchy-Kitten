@@ -34,8 +34,9 @@ type pollASGActivities func(
 ) (bool, error)
 
 func main() {
-	log.SetLevel(log.DebugLevel)
+	log.SetFormatter(&log.TextFormatter{FullTimestamp: true})
 	log.SetOutput(os.Stdout)
+	log.SetLevel(log.DebugLevel)
 
 	sess := session.Must(session.NewSession())
 	svc := autoscaling.New(sess)
@@ -166,6 +167,7 @@ func checkForContentAtURL(
 	exists := strings.Contains(string(body), content)
 	if !exists {
 		log.WithFields(log.Fields{
+			"res":     res,
 			"body":    string(body),
 			"content": content,
 		}).Error("Did not find the expected content at the failover url")
@@ -214,6 +216,8 @@ func enterStandby(
 	timeout time.Duration,
 	pollEvery time.Duration,
 ) int {
+	log.WithField("instanceIDs", instanceIDs).Info("Attempting to enter standby")
+
 	ret := 0
 	enterStandbyInput := getEnterStandbyInput(instanceIDs, &asgName)
 	enterStandbyOutput, err := svc.EnterStandby(enterStandbyInput)
@@ -237,8 +241,14 @@ func enterStandby(
 		pollEvery)
 
 	if result == false {
-		log.Info("Some (or all) of the instances in the autoscaling group did not enter standby")
+		log.
+			WithField("InstanceIDs", instanceIDs).
+			Info("Some (or all) of the instances in the autoscaling group did not enter standby")
 		ret++
+	} else {
+		log.
+			WithField("instanceIDs", instanceIDs).
+			Info("Instances now in standby")
 	}
 
 	return ret
@@ -280,6 +290,7 @@ func exitStandby(
 			pollEvery)
 
 		if isSuccess(result) {
+			log.WithField("instanceIDs", instanceIDs).Info("Instances exited standby")
 			ret = 0
 			break
 		}

@@ -21,6 +21,7 @@ import (
 
 func TestMain(m *testing.M) {
 	log.SetLevel(log.PanicLevel)
+	log.SetFormatter(&log.TextFormatter{FullTimestamp: true})
 	os.Exit(m.Run())
 }
 
