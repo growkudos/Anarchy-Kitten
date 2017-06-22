@@ -36,7 +36,7 @@ type pollASGActivities func(
 func main() {
 	log.SetFormatter(&log.TextFormatter{FullTimestamp: true})
 	log.SetOutput(os.Stdout)
-	log.SetLevel(log.DebugLevel)
+	log.SetLevel(log.InfoLevel)
 
 	sess := session.Must(session.NewSession())
 	svc := autoscaling.New(sess)
@@ -98,6 +98,8 @@ func do(
 			func(in bool) bool { return in },
 		)
 	}
+
+	// TODO check that the content matches the original
 
 	log.WithFields(log.Fields{
 		"extCode": exitCode,
@@ -188,10 +190,14 @@ func checkForContentAtURL(c contentCheck) int {
 			"res":     res,
 			"body":    string(body),
 			"content": c.content,
-		}).Error("Did not find the expected content at the failover url")
+		}).Warn("Did not find the expected content at the failover url")
 		return 1
 	}
 
+	log.WithFields(log.Fields{
+		"content": c.content,
+		"url":     c.url,
+	}).Info("Found the expected content")
 	return 0
 }
 
