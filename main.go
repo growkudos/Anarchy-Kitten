@@ -6,7 +6,7 @@ import (
 	"flag"
 	"io/ioutil"
 	"net/http"
-	"net/url"
+	neturl "net/url"
 	"os"
 	"strings"
 	"time"
@@ -19,9 +19,7 @@ import (
 	"github.com/aws/aws-sdk-go/service/autoscaling/autoscalingiface"
 )
 
-type contentCheck struct {
-	url      string
-	content  string
+type contentAuth struct {
 	user     string
 	password string
 	insecure bool
@@ -41,18 +39,28 @@ func main() {
 	sess := session.Must(session.NewSession())
 	svc := autoscaling.New(sess)
 
-	url, content, timeout, poll, user, password, insecure := getFlags(flag.CommandLine, os.Args[1:])
+	url,
+		primary,
+		secondary,
+		timeout,
+		poll,
+		auth := getFlags(flag.CommandLine, os.Args[1:])
 
 	os.Exit(do(
 		svc,
-		contentCheck{url: url, content: content, user: user, password: password, insecure: insecure},
+		primary,
+		secondary,
+		url,
+		*auth,
 		(time.Duration(poll))*time.Second,
 		(time.Duration(timeout))*time.Second))
 }
 
-func getFlags(fs *flag.FlagSet, args []string) (string, string, int, int, string, string, bool) {
+func getFlags(fs *flag.FlagSet, args []string) (
+	string, string, string, int, int, *contentAuth) {
 	urlPtr := fs.String("url", "http://www.growkudos.com", "The url to check")
-	contentPtr := fs.String("content", "Maintenance", "The content to check for")
+	primaryPtr := fs.String("primary", "research", "The primary (original) content to check for")
+	secondaryPtr := fs.String("secondary", "upgrading", "The secondary (failover) content to check for")
 	timeoutPtr := fs.Int("timeout", 600, "The timeout for the content poll check in seconds")
 	pollPtr := fs.Int("poll", 10, "The content poll interval in seconds")
 	userPtr := fs.String("user", "", "A user for basic authentication")
@@ -60,12 +68,20 @@ func getFlags(fs *flag.FlagSet, args []string) (string, string, int, int, string
 	insecurePtr := fs.Bool("insecure", false, "Whether to ignore certificate TLS errors")
 	fs.Parse(args)
 
-	return *urlPtr, *contentPtr, *timeoutPtr, *pollPtr, *userPtr, *pwdPtr, *insecurePtr
+	return *urlPtr,
+		*primaryPtr,
+		*secondaryPtr,
+		*timeoutPtr,
+		*pollPtr,
+		&contentAuth{user: *userPtr, password: *pwdPtr, insecure: *insecurePtr}
 }
 
 func do(
 	svc autoscalingiface.AutoScalingAPI,
-	check contentCheck,
+	primary string,
+	secondary string,
+	u string,
+	auth contentAuth,
 	poll time.Duration,
 	timeout time.Duration,
 ) int {
@@ -82,7 +98,7 @@ func do(
 	exitCode += result
 
 	if result == 0 {
-		exitCode += pollForContent(check, poll, timeout, checkForContentAtURL)
+		exitCode += pollForContent(secondary, u, auth, poll, timeout, checkForContentAtURL)
 	}
 
 	// This tries forever to get all the instances back into service
@@ -99,7 +115,8 @@ func do(
 		)
 	}
 
-	// TODO check that the content matches the original
+	// Now check that the content of the url is the original primary content
+	exitCode += pollForContent(primary, u, auth, poll, timeout, checkForContentAtURL)
 
 	log.WithFields(log.Fields{
 		"extCode": exitCode,
@@ -122,10 +139,12 @@ func areAllInstancesInService(instances []*autoscaling.Instance) bool {
 }
 
 func pollForContent(
-	content contentCheck,
+	content string,
+	u string,
+	auth contentAuth,
 	poll time.Duration,
 	timeout time.Duration,
-	check func(contentCheck) int,
+	check func(string, string, contentAuth) int,
 ) int {
 
 	done := make(chan bool)
@@ -133,7 +152,7 @@ func pollForContent(
 	go func() {
 		for t := range ticker.C {
 			log.WithField("t", t).Debug("Poll for content check")
-			if check(content) == 0 {
+			if check(content, u, auth) == 0 {
 				done <- true
 			}
 		}
@@ -151,26 +170,26 @@ func pollForContent(
 	}
 }
 
-func checkForContentAtURL(c contentCheck) int {
+func checkForContentAtURL(content string, u string, auth contentAuth) int {
 	log.WithFields(log.Fields{
-		"rawurl":  c.url,
-		"content": c.content,
+		"url":     u,
+		"content": content,
 	}).Debug("checkForContentAtURL")
 
-	_, err := url.ParseRequestURI(c.url)
+	_, err := neturl.ParseRequestURI(u)
 	if err != nil {
 		log.
 			WithError(err).
-			WithField("rawurl", c.url).
+			WithField("url", u).
 			Error("Could not parse the URL")
 		return 1
 	}
 
-	res, err := getURL(c.url, c.user, c.password, c.insecure)
+	res, err := getURL(u, auth.user, auth.password, auth.insecure)
 	if err != nil {
 		log.
 			WithError(err).
-			WithField("rawurl", c.url).
+			WithField("url", u).
 			Error("Could not get the URL")
 		return 1
 	}
@@ -184,19 +203,19 @@ func checkForContentAtURL(c contentCheck) int {
 		return 1
 	}
 
-	exists := strings.Contains(string(body), c.content)
+	exists := strings.Contains(string(body), content)
 	if !exists {
 		log.WithFields(log.Fields{
 			"res":     res,
 			"body":    string(body),
-			"content": c.content,
+			"content": content,
 		}).Warn("Did not find the expected content at the failover url")
 		return 1
 	}
 
 	log.WithFields(log.Fields{
-		"content": c.content,
-		"url":     c.url,
+		"content": content,
+		"url":     u,
 	}).Info("Found the expected content")
 	return 0
 }

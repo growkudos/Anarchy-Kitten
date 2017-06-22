@@ -340,8 +340,7 @@ func TestValidateAwsCredentialsAreMissing(t *testing.T) {
 }
 
 func TestCheckForContentAtURLInvalidUrl(t *testing.T) {
-	c := contentCheck{url: "Invalid", content: "test"}
-	assert.Equal(t, 1, checkForContentAtURL(c))
+	assert.Equal(t, 1, checkForContentAtURL("test", "Invalid", contentAuth{}))
 }
 
 func TestCheckForContentAtURLIncorrectContent(t *testing.T) {
@@ -350,8 +349,7 @@ func TestCheckForContentAtURLIncorrectContent(t *testing.T) {
 	}))
 	defer ts.Close()
 
-	c := contentCheck{url: ts.URL, content: "test"}
-	assert.Equal(t, 1, checkForContentAtURL(c))
+	assert.Equal(t, 1, checkForContentAtURL("test", ts.URL, contentAuth{}))
 }
 
 func TestCheckForContentAtURLCorrectContent(t *testing.T) {
@@ -360,8 +358,7 @@ func TestCheckForContentAtURLCorrectContent(t *testing.T) {
 	}))
 	defer ts.Close()
 
-	c := contentCheck{url: ts.URL, content: "matching"}
-	assert.Equal(t, 0, checkForContentAtURL(c))
+	assert.Equal(t, 0, checkForContentAtURL("matching", ts.URL, contentAuth{}))
 }
 
 func TestGetURLSecureNoAuth(t *testing.T) {
@@ -491,14 +488,19 @@ func TestDoSuccess(t *testing.T) {
 	err = os.Setenv("ASG_NAME", "ASG_NAME_VALUE")
 	assert.Nil(t, err)
 
+	count := 0
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		fmt.Fprintln(w, "matching")
+		if count == 0 {
+			fmt.Fprintln(w, "secondary")
+		} else {
+			fmt.Fprintln(w, "primary")
+		}
+		count++
 	}))
 	defer ts.Close()
 
 	mockSvc := &mockAutoScalingClient{Success: true}
-	check := contentCheck{url: ts.URL, content: "matching"}
-	exitCode := do(mockSvc, check, 1*time.Millisecond, 3*time.Millisecond)
+	exitCode := do(mockSvc, "primary", "secondary", ts.URL, contentAuth{}, 1*time.Millisecond, 3*time.Millisecond)
 	assert.Equal(t, 0, exitCode)
 
 	err = os.Unsetenv("AWS_ACCESS_KEY_ID")
@@ -515,14 +517,19 @@ func TestDoEnterStandbyFail(t *testing.T) {
 	err = os.Setenv("ASG_NAME", "ASG_NAME_VALUE")
 	assert.Nil(t, err)
 
+	count := 0
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		fmt.Fprintln(w, "matching")
+		if count == 0 {
+			fmt.Fprintln(w, "secondary")
+		} else {
+			fmt.Fprintln(w, "primary")
+		}
+		count++
 	}))
 	defer ts.Close()
 
 	mockSvc := &mockAutoScalingClient{Error: "EnterStandby", Success: true}
-	check := contentCheck{url: ts.URL, content: "matching"}
-	exitCode := do(mockSvc, check, 1*time.Millisecond, 3*time.Millisecond)
+	exitCode := do(mockSvc, "primary", "secondary", ts.URL, contentAuth{}, 1*time.Millisecond, 3*time.Millisecond)
 	assert.Equal(t, 1, exitCode)
 
 	err = os.Unsetenv("AWS_ACCESS_KEY_ID")
@@ -539,14 +546,19 @@ func TestDoContentCheckFail(t *testing.T) {
 	err = os.Setenv("ASG_NAME", "ASG_NAME_VALUE")
 	assert.Nil(t, err)
 
+	count := 0
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		fmt.Fprintln(w, "matching")
+		if count == 0 {
+			fmt.Fprintln(w, "notmatching")
+		} else {
+			fmt.Fprintln(w, "primary")
+		}
+		count++
 	}))
 	defer ts.Close()
 
 	mockSvc := &mockAutoScalingClient{Success: true}
-	check := contentCheck{url: ts.URL, content: "notMatching"}
-	exitCode := do(mockSvc, check, 1*time.Millisecond, 3*time.Millisecond)
+	exitCode := do(mockSvc, "primary", "secondary", ts.URL, contentAuth{}, 1*time.Millisecond, 3*time.Millisecond)
 	assert.Equal(t, 1, exitCode)
 
 	err = os.Unsetenv("AWS_ACCESS_KEY_ID")
@@ -563,8 +575,14 @@ func TestDoExitStandbyFail(t *testing.T) {
 	err = os.Setenv("ASG_NAME", "ASG_NAME_VALUE")
 	assert.Nil(t, err)
 
+	count := 0
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		fmt.Fprintln(w, "matching")
+		if count == 0 {
+			fmt.Fprintln(w, "secondary")
+		} else {
+			fmt.Fprintln(w, "primary")
+		}
+		count++
 	}))
 	defer ts.Close()
 
@@ -573,8 +591,7 @@ func TestDoExitStandbyFail(t *testing.T) {
 		Success:       true,
 		ServiceStatus: []string{"Pending", "Pending", "InService"},
 	}
-	check := contentCheck{url: ts.URL, content: "matching"}
-	exitCode := do(mockSvc, check, 1*time.Millisecond, 3*time.Millisecond)
+	exitCode := do(mockSvc, "primary", "secondary", ts.URL, contentAuth{}, 1*time.Millisecond, 3*time.Millisecond)
 	assert.Equal(t, 1, exitCode)
 
 	err = os.Unsetenv("AWS_ACCESS_KEY_ID")
@@ -586,14 +603,15 @@ func TestDoExitStandbyFail(t *testing.T) {
 
 func TestGetFlagsDefault(t *testing.T) {
 	fs := flag.NewFlagSet("test", flag.ContinueOnError)
-	url, content, timeout, poll, user, password, insecure := getFlags(fs, nil)
+	url, primary, secondary, timeout, poll, auth := getFlags(fs, nil)
 	assert.Equal(t, "http://www.growkudos.com", url)
-	assert.Equal(t, "Maintenance", content)
+	assert.Equal(t, "research", primary)
+	assert.Equal(t, "upgrading", secondary)
 	assert.Equal(t, 600, timeout)
 	assert.Equal(t, 10, poll)
-	assert.Equal(t, "", user)
-	assert.Equal(t, "", password)
-	assert.Equal(t, false, insecure)
+	assert.Equal(t, "", auth.user)
+	assert.Equal(t, "", auth.password)
+	assert.Equal(t, false, auth.insecure)
 }
 
 func TestGetFlagsSetValues(t *testing.T) {
@@ -601,21 +619,23 @@ func TestGetFlagsSetValues(t *testing.T) {
 
 	args := []string{
 		"-url=TEST",
-		"-content=CONTENT",
+		"-primary=PRIMARY",
+		"-secondary=SECONDARY",
 		"-timeout=42",
 		"-poll=84",
 		"-user=USER",
 		"-pwd=PASSWORD",
 		"-insecure=true"}
-	url, content, timeout, poll, user, password, insecure := getFlags(fs, args)
+	url, primary, secondary, timeout, poll, auth := getFlags(fs, args)
 
 	assert.Equal(t, "TEST", url)
-	assert.Equal(t, "CONTENT", content)
+	assert.Equal(t, "PRIMARY", primary)
+	assert.Equal(t, "SECONDARY", secondary)
 	assert.Equal(t, 42, timeout)
 	assert.Equal(t, 84, poll)
-	assert.Equal(t, "USER", user)
-	assert.Equal(t, "PASSWORD", password)
-	assert.Equal(t, true, insecure)
+	assert.Equal(t, "USER", auth.user)
+	assert.Equal(t, "PASSWORD", auth.password)
+	assert.Equal(t, true, auth.insecure)
 }
 
 func TestAreAllInstancesInServiceAllInService(t *testing.T) {
@@ -658,18 +678,17 @@ func TestAreAllInstancesInServiceSomeInService(t *testing.T) {
 }
 
 func TestPollForContentSuccessNoPoll(t *testing.T) {
-	check := func(cc contentCheck) int {
+	check := func(content string, url string, auth contentAuth) int {
 		return 0
 	}
 
-	c := contentCheck{}
-	res := pollForContent(c, 1*time.Millisecond, 3*time.Millisecond, check)
+	res := pollForContent("test", "url", contentAuth{}, 1*time.Millisecond, 3*time.Millisecond, check)
 	assert.Equal(t, 0, res)
 }
 
 func TestPollForContentSuccessPoll(t *testing.T) {
 	poll := 0
-	check := func(cc contentCheck) int {
+	check := func(content string, url string, auth contentAuth) int {
 		poll++
 		if poll == 2 {
 			return 0
@@ -677,18 +696,16 @@ func TestPollForContentSuccessPoll(t *testing.T) {
 		return 1
 	}
 
-	c := contentCheck{}
-	res := pollForContent(c, 1*time.Millisecond, 5*time.Millisecond, check)
+	res := pollForContent("test", "url", contentAuth{}, 1*time.Millisecond, 5*time.Millisecond, check)
 	assert.Equal(t, 0, res)
 }
 
 func TestPollForContentTimeout(t *testing.T) {
-	check := func(cc contentCheck) int {
+	check := func(content string, url string, auth contentAuth) int {
 		return 1
 	}
 
-	c := contentCheck{}
-	res := pollForContent(c, 1*time.Millisecond, 5*time.Millisecond, check)
+	res := pollForContent("test", "url", contentAuth{}, 1*time.Millisecond, 5*time.Millisecond, check)
 	assert.Equal(t, 1, res)
 }
 
