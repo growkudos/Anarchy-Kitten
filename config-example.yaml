@@ -1,0 +1,10 @@
+url: https://www.mywebsite.com # the URL to content check
+primary: My Working Site       # The content to search for in the original, working website
+secondary: Back soon!          # The content to search for in the failver site
+poll: 10                       # The number of seconds between polling for content and ASG status checks
+timeout: 600                   # The timeout in seconds for the content and ASG status checks
+auth:
+  user: user                   # The user name for any basic authentication
+  password: password           # The password for any basic authentication
+  insecure: true               # If true then ignores certificate errors, useful for test certificates
+

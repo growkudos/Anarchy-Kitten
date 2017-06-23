@@ -2,7 +2,6 @@ package main
 
 import (
 	"errors"
-	"flag"
 	"fmt"
 	"io/ioutil"
 	"net/http"
@@ -599,43 +598,6 @@ func TestDoExitStandbyFail(t *testing.T) {
 	err = os.Unsetenv("AWS_REGION")
 	err = os.Unsetenv("ASG_NAME")
 	assert.Nil(t, err)
-}
-
-func TestGetFlagsDefault(t *testing.T) {
-	fs := flag.NewFlagSet("test", flag.ContinueOnError)
-	url, primary, secondary, timeout, poll, auth := getFlags(fs, nil)
-	assert.Equal(t, "http://www.growkudos.com", url)
-	assert.Equal(t, "research", primary)
-	assert.Equal(t, "upgrading", secondary)
-	assert.Equal(t, 600, timeout)
-	assert.Equal(t, 10, poll)
-	assert.Equal(t, "", auth.user)
-	assert.Equal(t, "", auth.password)
-	assert.Equal(t, false, auth.insecure)
-}
-
-func TestGetFlagsSetValues(t *testing.T) {
-	fs := flag.NewFlagSet("test", flag.ContinueOnError)
-
-	args := []string{
-		"-url=TEST",
-		"-primary=PRIMARY",
-		"-secondary=SECONDARY",
-		"-timeout=42",
-		"-poll=84",
-		"-user=USER",
-		"-pwd=PASSWORD",
-		"-insecure=true"}
-	url, primary, secondary, timeout, poll, auth := getFlags(fs, args)
-
-	assert.Equal(t, "TEST", url)
-	assert.Equal(t, "PRIMARY", primary)
-	assert.Equal(t, "SECONDARY", secondary)
-	assert.Equal(t, 42, timeout)
-	assert.Equal(t, 84, poll)
-	assert.Equal(t, "USER", auth.user)
-	assert.Equal(t, "PASSWORD", auth.password)
-	assert.Equal(t, true, auth.insecure)
 }
 
 func TestAreAllInstancesInServiceAllInService(t *testing.T) {

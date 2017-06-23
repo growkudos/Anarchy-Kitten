@@ -3,7 +3,6 @@ package main
 import (
 	"crypto/tls"
 	"errors"
-	"flag"
 	"io/ioutil"
 	"net/http"
 	neturl "net/url"
@@ -11,12 +10,12 @@ import (
 	"strings"
 	"time"
 
-	log "github.com/sirupsen/logrus"
-
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/aws/session"
 	"github.com/aws/aws-sdk-go/service/autoscaling"
 	"github.com/aws/aws-sdk-go/service/autoscaling/autoscalingiface"
+	log "github.com/sirupsen/logrus"
+	"github.com/spf13/viper"
 )
 
 type contentAuth struct {
@@ -34,46 +33,34 @@ type pollASGActivities func(
 func main() {
 	log.SetFormatter(&log.TextFormatter{FullTimestamp: true})
 	log.SetOutput(os.Stdout)
-	log.SetLevel(log.InfoLevel)
+	log.SetLevel(log.DebugLevel)
+
+	viper.AutomaticEnv()
+	viper.SetDefault("poll", 10)
+	viper.SetDefault("timeout", 600)
+	viper.SetDefault("auth.insecure", false)
+	viper.SetConfigName("config") // name of config file (without extension)
+	viper.AddConfigPath(".")      // look for config in the working directory
+	err := viper.ReadInConfig()   // Find and read the config file
+	if err != nil {               // Handle errors reading the config file
+		log.WithError(err).Panic("Fatal error trying to read the config file")
+	}
 
 	sess := session.Must(session.NewSession())
 	svc := autoscaling.New(sess)
 
-	url,
-		primary,
-		secondary,
-		timeout,
-		poll,
-		auth := getFlags(flag.CommandLine, os.Args[1:])
-
 	os.Exit(do(
 		svc,
-		primary,
-		secondary,
-		url,
-		*auth,
-		(time.Duration(poll))*time.Second,
-		(time.Duration(timeout))*time.Second))
-}
-
-func getFlags(fs *flag.FlagSet, args []string) (
-	string, string, string, int, int, *contentAuth) {
-	urlPtr := fs.String("url", "http://www.growkudos.com", "The url to check")
-	primaryPtr := fs.String("primary", "research", "The primary (original) content to check for")
-	secondaryPtr := fs.String("secondary", "upgrading", "The secondary (failover) content to check for")
-	timeoutPtr := fs.Int("timeout", 600, "The timeout for the content poll check in seconds")
-	pollPtr := fs.Int("poll", 10, "The content poll interval in seconds")
-	userPtr := fs.String("user", "", "A user for basic authentication")
-	pwdPtr := fs.String("pwd", "", "The password for the basic auth user")
-	insecurePtr := fs.Bool("insecure", false, "Whether to ignore certificate TLS errors")
-	fs.Parse(args)
-
-	return *urlPtr,
-		*primaryPtr,
-		*secondaryPtr,
-		*timeoutPtr,
-		*pollPtr,
-		&contentAuth{user: *userPtr, password: *pwdPtr, insecure: *insecurePtr}
+		viper.GetString("primary"),
+		viper.GetString("secondary"),
+		viper.GetString("url"),
+		contentAuth{
+			user:     viper.GetString("auth.user"),
+			password: viper.GetString("auth.password"),
+			insecure: viper.GetBool("auth.insecure"),
+		},
+		(time.Duration(viper.GetInt("poll")))*time.Second,
+		(time.Duration(viper.GetInt("timeout")))*time.Second))
 }
 
 func do(
@@ -85,6 +72,16 @@ func do(
 	poll time.Duration,
 	timeout time.Duration,
 ) int {
+	log.WithFields(log.Fields{
+		"primary":       primary,
+		"secondary":     secondary,
+		"poll":          poll,
+		"timeout":       timeout,
+		"auth.user":     auth.user,
+		"auth.password": auth.password,
+		"auth.insecure": auth.insecure,
+	}).Info("Parameters")
+
 	exitCode := 0
 
 	asgName := os.Getenv("ASG_NAME")
@@ -206,8 +203,10 @@ func checkForContentAtURL(content string, u string, auth contentAuth) int {
 	exists := strings.Contains(string(body), content)
 	if !exists {
 		log.WithFields(log.Fields{
-			"res":     res,
-			"body":    string(body),
+			"res":  res,
+			"body": string(body),
+		}).Debug("Did not find the expected content at the failover url")
+		log.WithFields(log.Fields{
 			"content": content,
 		}).Warn("Did not find the expected content at the failover url")
 		return 1
@@ -259,7 +258,7 @@ func enterStandby(
 	poll time.Duration,
 	timeout time.Duration,
 ) int {
-	log.WithField("instanceIDs", instanceIDs).Info("Attempting to enter standby")
+	log.Info("Attempting to enter standby")
 
 	ret := 0
 	enterStandbyInput := getEnterStandbyInput(instanceIDs, &asgName)
@@ -285,12 +284,10 @@ func enterStandby(
 
 	if result == false {
 		log.
-			WithField("InstanceIDs", instanceIDs).
-			Info("Some (or all) of the instances in the autoscaling group did not enter standby")
+			Error("Some (or all) of the instances in the autoscaling group did not enter standby")
 		ret++
 	} else {
 		log.
-			WithField("instanceIDs", instanceIDs).
 			Info("Instances now in standby")
 	}
 
@@ -305,7 +302,7 @@ func exitStandby(
 	timeout time.Duration,
 	isSuccess func(bool) bool,
 ) int {
-	log.WithField("instanceIDs", instanceIDs).Info("Attempting to exit standby")
+	log.Info("Attempting to exit standby")
 	exitStandbyArgs := autoscaling.ExitStandbyInput{
 		AutoScalingGroupName: &asgName,
 		InstanceIds:          instanceIDs,
@@ -333,7 +330,7 @@ func exitStandby(
 			timeout)
 
 		if isSuccess(result) {
-			log.WithField("instanceIDs", instanceIDs).Info("Instances exited standby")
+			log.Info("Instances exited standby")
 			ret = 0
 			break
 		}
