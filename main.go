@@ -224,6 +224,7 @@ func getURL(
 	user string,
 	password string,
 	insecure bool) (*http.Response, error) {
+
 	req, err := http.NewRequest("GET", url, nil)
 	if err != nil {
 		log.WithError(err).Error("Creating request")
