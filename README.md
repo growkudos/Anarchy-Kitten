@@ -11,19 +11,4 @@ $ AWS_ACCESS_KEY_ID=true AWS_SECRET_ACCESS_KEY=true AWS_REGION=true ASG_NAME=pro
 
 Where `ASG_NAME` is the name of the autoscaling group.
 
-The following command line flags are also available:
-
-```
- -url=http://www.mywebsite.com
-The URL to check for content
- 
- -content=Maintenance
-The known content to check for after failover
-
- -timeout=600
-The number of seconds to timeout after when waiting for an instance to change lifecycle state in the autoscaling group
-
- -poll=10
-The number of seconds to poll for when waiting for an instance to change Lifecycle state in the autoscaling group
-
- ```
+Configuartion options defined in `config.yaml` residing in the same directory as the binary. See `confif-example.yaml` for examples and documentation.

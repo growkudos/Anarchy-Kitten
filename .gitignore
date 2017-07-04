@@ -16,3 +16,6 @@
 **/*.swo
 **/*.swp
 .DS_Store
+
+# Don't check in config file, may have a password in it
+config.yaml

@@ -3,25 +3,22 @@ package main
 import (
 	"crypto/tls"
 	"errors"
-	"flag"
 	"io/ioutil"
 	"net/http"
-	"net/url"
+	neturl "net/url"
 	"os"
 	"strings"
 	"time"
-
-	log "github.com/sirupsen/logrus"
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/aws/session"
 	"github.com/aws/aws-sdk-go/service/autoscaling"
 	"github.com/aws/aws-sdk-go/service/autoscaling/autoscalingiface"
+	log "github.com/sirupsen/logrus"
+	"github.com/spf13/viper"
 )
 
-type contentCheck struct {
-	url      string
-	content  string
+type contentAuth struct {
 	user     string
 	password string
 	insecure bool
@@ -38,37 +35,53 @@ func main() {
 	log.SetOutput(os.Stdout)
 	log.SetLevel(log.DebugLevel)
 
+	viper.AutomaticEnv()
+	viper.SetDefault("poll", 10)
+	viper.SetDefault("timeout", 600)
+	viper.SetDefault("auth.insecure", false)
+	viper.SetConfigName("config") // name of config file (without extension)
+	viper.AddConfigPath(".")      // look for config in the working directory
+	err := viper.ReadInConfig()   // Find and read the config file
+	if err != nil {               // Handle errors reading the config file
+		log.WithError(err).Panic("Fatal error trying to read the config file")
+	}
+
 	sess := session.Must(session.NewSession())
 	svc := autoscaling.New(sess)
 
-	url, content, timeout, poll, user, password, insecure := getFlags(flag.CommandLine, os.Args[1:])
-
 	os.Exit(do(
 		svc,
-		contentCheck{url: url, content: content, user: user, password: password, insecure: insecure},
-		(time.Duration(poll))*time.Second,
-		(time.Duration(timeout))*time.Second))
-}
-
-func getFlags(fs *flag.FlagSet, args []string) (string, string, int, int, string, string, bool) {
-	urlPtr := fs.String("url", "http://www.growkudos.com", "The url to check")
-	contentPtr := fs.String("content", "Maintenance", "The content to check for")
-	timeoutPtr := fs.Int("timeout", 600, "The timeout for the content poll check in seconds")
-	pollPtr := fs.Int("poll", 10, "The content poll interval in seconds")
-	userPtr := fs.String("user", "", "A user for basic authentication")
-	pwdPtr := fs.String("pwd", "", "The password for the basic auth user")
-	insecurePtr := fs.Bool("insecure", false, "Whether to ignore certificate TLS errors")
-	fs.Parse(args)
-
-	return *urlPtr, *contentPtr, *timeoutPtr, *pollPtr, *userPtr, *pwdPtr, *insecurePtr
+		viper.GetString("primary"),
+		viper.GetString("secondary"),
+		viper.GetString("url"),
+		contentAuth{
+			user:     viper.GetString("auth.user"),
+			password: viper.GetString("auth.password"),
+			insecure: viper.GetBool("auth.insecure"),
+		},
+		(time.Duration(viper.GetInt("poll")))*time.Second,
+		(time.Duration(viper.GetInt("timeout")))*time.Second))
 }
 
 func do(
 	svc autoscalingiface.AutoScalingAPI,
-	check contentCheck,
+	primary string,
+	secondary string,
+	u string,
+	auth contentAuth,
 	poll time.Duration,
 	timeout time.Duration,
 ) int {
+	log.WithFields(log.Fields{
+		"primary":       primary,
+		"secondary":     secondary,
+		"poll":          poll,
+		"timeout":       timeout,
+		"auth.user":     auth.user,
+		"auth.password": auth.password,
+		"auth.insecure": auth.insecure,
+	}).Info("Parameters")
+
 	exitCode := 0
 
 	asgName := os.Getenv("ASG_NAME")
@@ -82,7 +95,7 @@ func do(
 	exitCode += result
 
 	if result == 0 {
-		exitCode += pollForContent(check, poll, timeout, checkForContentAtURL)
+		exitCode += pollForContent(secondary, u, auth, poll, timeout, checkForContentAtURL)
 	}
 
 	// This tries forever to get all the instances back into service
@@ -98,6 +111,9 @@ func do(
 			func(in bool) bool { return in },
 		)
 	}
+
+	// Now check that the content of the url is the original primary content
+	exitCode += pollForContent(primary, u, auth, poll, timeout, checkForContentAtURL)
 
 	log.WithFields(log.Fields{
 		"extCode": exitCode,
@@ -120,10 +136,12 @@ func areAllInstancesInService(instances []*autoscaling.Instance) bool {
 }
 
 func pollForContent(
-	content contentCheck,
+	content string,
+	u string,
+	auth contentAuth,
 	poll time.Duration,
 	timeout time.Duration,
-	check func(contentCheck) int,
+	check func(string, string, contentAuth) int,
 ) int {
 
 	done := make(chan bool)
@@ -131,7 +149,7 @@ func pollForContent(
 	go func() {
 		for t := range ticker.C {
 			log.WithField("t", t).Debug("Poll for content check")
-			if check(content) == 0 {
+			if check(content, u, auth) == 0 {
 				done <- true
 			}
 		}
@@ -149,26 +167,26 @@ func pollForContent(
 	}
 }
 
-func checkForContentAtURL(c contentCheck) int {
+func checkForContentAtURL(content string, u string, auth contentAuth) int {
 	log.WithFields(log.Fields{
-		"rawurl":  c.url,
-		"content": c.content,
+		"url":     u,
+		"content": content,
 	}).Debug("checkForContentAtURL")
 
-	_, err := url.ParseRequestURI(c.url)
+	_, err := neturl.ParseRequestURI(u)
 	if err != nil {
 		log.
 			WithError(err).
-			WithField("rawurl", c.url).
+			WithField("url", u).
 			Error("Could not parse the URL")
 		return 1
 	}
 
-	res, err := getURL(c.url, c.user, c.password, c.insecure)
+	res, err := getURL(u, auth.user, auth.password, auth.insecure)
 	if err != nil {
 		log.
 			WithError(err).
-			WithField("rawurl", c.url).
+			WithField("url", u).
 			Error("Could not get the URL")
 		return 1
 	}
@@ -182,16 +200,22 @@ func checkForContentAtURL(c contentCheck) int {
 		return 1
 	}
 
-	exists := strings.Contains(string(body), c.content)
+	exists := strings.Contains(string(body), content)
 	if !exists {
 		log.WithFields(log.Fields{
-			"res":     res,
-			"body":    string(body),
-			"content": c.content,
-		}).Error("Did not find the expected content at the failover url")
+			"res":  res,
+			"body": string(body),
+		}).Debug("Did not find the expected content at the failover url")
+		log.WithFields(log.Fields{
+			"content": content,
+		}).Warn("Did not find the expected content at the failover url")
 		return 1
 	}
 
+	log.WithFields(log.Fields{
+		"content": content,
+		"url":     u,
+	}).Info("Found the expected content")
 	return 0
 }
 
@@ -200,6 +224,7 @@ func getURL(
 	user string,
 	password string,
 	insecure bool) (*http.Response, error) {
+
 	req, err := http.NewRequest("GET", url, nil)
 	if err != nil {
 		log.WithError(err).Error("Creating request")
@@ -234,7 +259,7 @@ func enterStandby(
 	poll time.Duration,
 	timeout time.Duration,
 ) int {
-	log.WithField("instanceIDs", instanceIDs).Info("Attempting to enter standby")
+	log.Info("Attempting to enter standby")
 
 	ret := 0
 	enterStandbyInput := getEnterStandbyInput(instanceIDs, &asgName)
@@ -260,12 +285,10 @@ func enterStandby(
 
 	if result == false {
 		log.
-			WithField("InstanceIDs", instanceIDs).
-			Info("Some (or all) of the instances in the autoscaling group did not enter standby")
+			Error("Some (or all) of the instances in the autoscaling group did not enter standby")
 		ret++
 	} else {
 		log.
-			WithField("instanceIDs", instanceIDs).
 			Info("Instances now in standby")
 	}
 
@@ -280,7 +303,7 @@ func exitStandby(
 	timeout time.Duration,
 	isSuccess func(bool) bool,
 ) int {
-	log.WithField("instanceIDs", instanceIDs).Info("Attempting to exit standby")
+	log.Info("Attempting to exit standby")
 	exitStandbyArgs := autoscaling.ExitStandbyInput{
 		AutoScalingGroupName: &asgName,
 		InstanceIds:          instanceIDs,
@@ -308,7 +331,7 @@ func exitStandby(
 			timeout)
 
 		if isSuccess(result) {
-			log.WithField("instanceIDs", instanceIDs).Info("Instances exited standby")
+			log.Info("Instances exited standby")
 			ret = 0
 			break
 		}
