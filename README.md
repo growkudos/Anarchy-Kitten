@@ -11,4 +11,4 @@ $ AWS_ACCESS_KEY_ID=true AWS_SECRET_ACCESS_KEY=true AWS_REGION=true ASG_NAME=pro
 
 Where `ASG_NAME` is the name of the autoscaling group.
 
-Configuartion options defined in `config.yaml` residing in the same directory as the binary. See `confif-example.yaml` for examples and documentation.
+Configuration options defined in `config.yaml` residing in the same directory as the binary. See `confif-example.yaml` for examples and documentation.
